@@ -13,24 +13,24 @@ graph TB
         EVENT[Event Listener]
         PROG[Programmatic API]
     end
-    
+
     subgraph "Core Engine"
         WE[WorkflowEngine]
         WX[WorkflowExecutor]
         WR[WorkflowResilience]
     end
-    
+
     subgraph "Cross-Cutting Concerns"
         TRACE[WorkflowTracer<br/>OpenTelemetry]
         METRICS[WorkflowMetrics<br/>Micrometer]
         HEALTH[HealthIndicator]
     end
-    
+
     subgraph "Infrastructure"
         CACHE[(lib-common-cache<br/>Redis/Caffeine)]
         EDA[lib-common-eda<br/>Kafka/RabbitMQ]
     end
-    
+
     REST --> WE
     EVENT --> WE
     PROG --> WE
@@ -87,12 +87,12 @@ sequenceDiagram
     participant Resilience as WorkflowResilience
     participant Cache as State Store
     participant Events as Event Publisher
-    
+
     Client->>Engine: startWorkflow(workflowId, input)
     Engine->>Engine: Generate instanceId
     Engine->>Cache: Save initial state
     Engine->>Executor: execute(definition, context)
-    
+
     loop For each step
         Executor->>Executor: Evaluate condition
         alt Condition passes
@@ -105,7 +105,7 @@ sequenceDiagram
             Executor->>Cache: Save step state (SKIPPED)
         end
     end
-    
+
     Executor->>Cache: Save workflow state (COMPLETED)
     Executor->>Events: Publish workflow.completed
     Engine->>Client: Return WorkflowInstance
@@ -122,13 +122,13 @@ graph LR
         S2[Step 2<br/>process]
         S3[Step 3<br/>notify]
     end
-    
+
     subgraph "Events"
         E1((order.created))
         E2((order.validated))
         E3((order.processed))
     end
-    
+
     E1 -->|triggers| S1
     S1 -->|emits| E2
     E2 -->|triggers| S2
@@ -143,7 +143,7 @@ Each step maintains its own state independent of the workflow:
 ```mermaid
 erDiagram
     WORKFLOW_STATE ||--o{ STEP_STATE : contains
-    
+
     WORKFLOW_STATE {
         string workflowId
         string instanceId
@@ -156,7 +156,7 @@ erDiagram
         timestamp createdAt
         timestamp updatedAt
     }
-    
+
     STEP_STATE {
         string workflowId
         string instanceId
@@ -172,3 +172,173 @@ erDiagram
     }
 ```
 
+## Cache Key Structure
+
+State is stored in the cache with the following key patterns:
+
+| Key Pattern | Description |
+|-------------|-------------|
+| `workflow:{workflowId}:{instanceId}` | Workflow instance data |
+| `workflow:state:{workflowId}:{instanceId}` | Enriched workflow state |
+| `workflow:step:{workflowId}:{instanceId}:{stepId}` | Individual step state |
+
+## Resilience4j Integration
+
+The resilience layer wraps step execution with multiple patterns:
+
+```mermaid
+graph LR
+    subgraph "Resilience Decorators"
+        CB[Circuit Breaker]
+        RL[Rate Limiter]
+        BH[Bulkhead]
+        TL[Time Limiter]
+    end
+
+    STEP[Step Execution] --> TL
+    TL --> BH
+    BH --> RL
+    RL --> CB
+    CB --> HANDLER[Step Handler]
+```
+
+### Circuit Breaker States
+
+```mermaid
+stateDiagram-v2
+    [*] --> CLOSED
+    CLOSED --> OPEN: Failure rate > threshold
+    OPEN --> HALF_OPEN: Wait duration elapsed
+    HALF_OPEN --> CLOSED: Permitted calls succeed
+    HALF_OPEN --> OPEN: Permitted calls fail
+```
+
+## Auto-Configuration
+
+The library uses Spring Boot auto-configuration:
+
+```mermaid
+graph TB
+    subgraph "Auto-Configuration Classes"
+        WAC[WorkflowAutoConfiguration]
+        WEAC[WorkflowEngineAutoConfiguration]
+        WRAC[WorkflowResilienceAutoConfiguration]
+    end
+
+    subgraph "Beans Created"
+        WE[WorkflowEngine]
+        WX[WorkflowExecutor]
+        WR[WorkflowResilience]
+        WC[WorkflowController]
+        WM[WorkflowMetrics]
+        WT[WorkflowTracer]
+        WH[WorkflowHealthIndicator]
+        WEP[WorkflowEventPublisher]
+    end
+
+    WAC --> WE
+    WAC --> WX
+    WAC --> WC
+    WAC --> WM
+    WAC --> WT
+    WAC --> WH
+    WAC --> WEP
+    WEAC --> WE
+    WRAC --> WR
+```
+
+## Event Flow
+
+```mermaid
+graph TB
+    subgraph "Workflow Events"
+        WS[workflow.started]
+        WC[workflow.completed]
+        WF[workflow.failed]
+        WX[workflow.cancelled]
+    end
+
+    subgraph "Step Events"
+        SS[workflow.step.started]
+        SC[workflow.step.completed]
+        SF[workflow.step.failed]
+        SR[workflow.step.retrying]
+    end
+
+    subgraph "Custom Events"
+        CE[outputEventType<br/>e.g., order.validated]
+    end
+
+    START((Start)) --> WS
+    WS --> SS
+    SS --> SC
+    SC --> CE
+    SC --> SS
+    SS --> SF
+    SF --> SR
+    SR --> SS
+    SC --> WC
+    SF --> WF
+    CANCEL((Cancel)) --> WX
+```
+
+## Integration Points
+
+### lib-common-cache
+
+Used for state persistence:
+- Workflow instance state
+- Step execution state
+- Workflow state aggregation
+
+Supports:
+- Redis (production)
+- Caffeine (development/testing)
+
+### lib-common-eda
+
+Used for event publishing and listening:
+- Workflow lifecycle events
+- Step lifecycle events
+- Custom step output events
+- Workflow trigger events
+
+Supports:
+- Kafka
+- RabbitMQ
+- SNS/SQS
+- Application Events (in-memory)
+
+## Thread Model
+
+The workflow engine uses Project Reactor for non-blocking execution:
+
+```mermaid
+graph TB
+    subgraph "Request Thread"
+        REQ[HTTP Request]
+    end
+
+    subgraph "Reactor Schedulers"
+        BOUND[boundedElastic<br/>Blocking I/O]
+        PARALLEL[parallel<br/>CPU-bound]
+    end
+
+    subgraph "Execution"
+        STEP1[Step 1]
+        STEP2[Step 2]
+        STEP3[Step 3]
+    end
+
+    REQ --> STEP1
+    STEP1 -->|async| BOUND
+    STEP2 -->|async| BOUND
+    STEP3 -->|sync| PARALLEL
+```
+
+## Next Steps
+
+- [Getting Started](getting-started.md) - Step-by-step tutorial
+- [Advanced Features](advanced-features.md) - Resilience4j, choreography, and more
+- [Configuration Reference](configuration.md) - All configuration options
+- [API Reference](api-reference.md) - REST and Java API documentation

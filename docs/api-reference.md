@@ -207,3 +207,389 @@ POST /api/v1/workflows/{workflowId}/instances/{instanceId}/retry
 }
 ```
 
+### List Instances
+
+Lists all instances of a workflow.
+
+```http
+GET /api/v1/workflows/{workflowId}/instances
+GET /api/v1/workflows/{workflowId}/instances?status=RUNNING
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status (PENDING, RUNNING, COMPLETED, FAILED, CANCELLED) |
+
+---
+
+## Step Endpoints
+
+### Trigger Step
+
+Triggers execution of a specific step (step-level choreography).
+
+```http
+POST /api/v1/workflows/{workflowId}/instances/{instanceId}/steps/{stepId}/trigger
+Content-Type: application/json
+
+{
+  "input": {
+    "additionalData": "value"
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "instanceId": "inst-789",
+  "workflowId": "order-processing",
+  "status": "RUNNING",
+  "currentStepId": "process-payment"
+}
+```
+
+### Get Step State
+
+Gets the state of a specific step.
+
+```http
+GET /api/v1/workflows/{workflowId}/instances/{instanceId}/steps/{stepId}
+```
+
+**Response:**
+
+```json
+{
+  "workflowId": "order-processing",
+  "instanceId": "inst-789",
+  "stepId": "validate",
+  "status": "COMPLETED",
+  "triggeredBy": "workflow",
+  "input": {"orderId": "ORD-123"},
+  "output": {"valid": true},
+  "startedAt": "2025-01-15T10:30:00Z",
+  "completedAt": "2025-01-15T10:30:01Z",
+  "durationMs": 1000
+}
+```
+
+### Get All Step States
+
+Gets all step states for a workflow instance.
+
+```http
+GET /api/v1/workflows/{workflowId}/instances/{instanceId}/steps
+```
+
+**Response:**
+
+```json
+[
+  {
+    "stepId": "validate",
+    "status": "COMPLETED",
+    "durationMs": 1000
+  },
+  {
+    "stepId": "process-payment",
+    "status": "RUNNING",
+    "durationMs": null
+  }
+]
+```
+
+### Get Workflow State (Dashboard View)
+
+Gets comprehensive workflow state including all step tracking.
+
+```http
+GET /api/v1/workflows/{workflowId}/instances/{instanceId}/state
+```
+
+**Response:**
+
+```json
+{
+  "workflowId": "order-processing",
+  "instanceId": "inst-789",
+  "status": "RUNNING",
+  "totalSteps": 3,
+  "completedSteps": ["validate"],
+  "failedSteps": [],
+  "pendingSteps": ["process-payment", "ship"],
+  "skippedSteps": [],
+  "currentStepId": "process-payment",
+  "nextStepId": "ship",
+  "createdAt": "2025-01-15T10:30:00Z",
+  "updatedAt": "2025-01-15T10:30:01Z"
+}
+```
+
+---
+
+## Status Codes
+
+| Code | Description |
+|------|-------------|
+| 200 | Success |
+| 201 | Created (workflow started) |
+| 202 | Accepted (workflow still running) |
+| 400 | Bad Request (invalid input) |
+| 404 | Not Found (workflow or instance not found) |
+| 500 | Internal Server Error |
+| 501 | Not Implemented (step state tracking disabled) |
+
+---
+
+## Java API
+
+The `WorkflowEngine` class provides the main programmatic interface.
+
+### Injection
+
+```java
+@Autowired
+private WorkflowEngine workflowEngine;
+```
+
+### Starting Workflows
+
+```java
+// Simple start
+Mono<WorkflowInstance> instance = workflowEngine.startWorkflow(
+    "order-processing",
+    Map.of("orderId", "ORD-123")
+);
+
+// With correlation ID and trigger source
+Mono<WorkflowInstance> instance = workflowEngine.startWorkflow(
+    "order-processing",
+    Map.of("orderId", "ORD-123"),
+    "correlation-456",
+    "api"
+);
+```
+
+### Getting Status
+
+```java
+// By workflow ID and instance ID
+Mono<WorkflowInstance> status = workflowEngine.getStatus(
+    "order-processing",
+    instanceId
+);
+
+// By instance ID only
+Mono<WorkflowInstance> status = workflowEngine.getStatus(instanceId);
+```
+
+### Collecting Results
+
+```java
+Mono<Order> result = workflowEngine.collectResult(
+    "order-processing",
+    instanceId,
+    Order.class
+);
+```
+
+### Triggering Steps
+
+```java
+Mono<WorkflowInstance> result = workflowEngine.triggerStep(
+    "order-processing",
+    instanceId,
+    "process-payment",
+    Map.of("paymentMethod", "credit"),
+    "api"
+);
+```
+
+### Step State
+
+```java
+// Get single step state
+Mono<StepState> state = workflowEngine.getStepState(
+    "order-processing",
+    instanceId,
+    "validate"
+);
+
+// Get all step states
+Flux<StepState> states = workflowEngine.getStepStates(
+    "order-processing",
+    instanceId
+);
+
+// Get comprehensive workflow state
+Mono<WorkflowState> state = workflowEngine.getWorkflowState(
+    "order-processing",
+    instanceId
+);
+```
+
+### Cancelling and Retrying
+
+```java
+// Cancel a running workflow
+Mono<WorkflowInstance> cancelled = workflowEngine.cancelWorkflow(
+    "order-processing",
+    instanceId
+);
+
+// Retry a failed workflow
+Mono<WorkflowInstance> retried = workflowEngine.retryWorkflow(
+    "order-processing",
+    instanceId
+);
+```
+
+### Finding Instances
+
+```java
+// All instances of a workflow
+Flux<WorkflowInstance> instances = workflowEngine.findInstances(
+    "order-processing"
+);
+
+// By status
+Flux<WorkflowInstance> running = workflowEngine.findInstances(
+    "order-processing",
+    WorkflowStatus.RUNNING
+);
+
+// Active instances (running or waiting)
+Flux<WorkflowInstance> active = workflowEngine.findActiveInstances();
+
+// By correlation ID
+Flux<WorkflowInstance> correlated = workflowEngine.findByCorrelationId(
+    "correlation-456"
+);
+```
+
+### Workflow Registration
+
+```java
+// Register a workflow definition
+workflowEngine.registerWorkflow(definition);
+
+// Unregister
+boolean removed = workflowEngine.unregisterWorkflow("order-processing");
+
+// Get definition
+Optional<WorkflowDefinition> def = workflowEngine.getWorkflowDefinition(
+    "order-processing"
+);
+
+// Get all workflows
+Collection<WorkflowDefinition> all = workflowEngine.getAllWorkflows();
+```
+
+### Event-Based Discovery
+
+```java
+// Find workflows triggered by an event
+Flux<WorkflowDefinition> workflows = workflowEngine.findWorkflowsByTriggerEvent(
+    "order.created"
+);
+
+// Find steps waiting for an event
+Flux<StepState> waiting = workflowEngine.findStepsWaitingForEvent(
+    "payment.processed"
+);
+
+// Find step definitions by input event
+List<WorkflowStepMatch> matches = workflowEngine.findStepsByInputEvent(
+    "order.validated"
+);
+```
+
+### Health Check
+
+```java
+Mono<Boolean> healthy = workflowEngine.isHealthy();
+```
+
+---
+
+## WorkflowInstance Record
+
+The `WorkflowInstance` record contains workflow execution state:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `instanceId` | String | Unique instance identifier |
+| `workflowId` | String | Workflow definition ID |
+| `workflowName` | String | Human-readable name |
+| `workflowVersion` | String | Version number |
+| `status` | WorkflowStatus | Current status |
+| `currentStepId` | String | Currently executing step |
+| `context` | WorkflowContext | Execution context |
+| `input` | Map | Input data |
+| `output` | Object | Final output |
+| `stepExecutions` | List | Step execution history |
+| `errorMessage` | String | Error message if failed |
+| `errorDetails` | String | Detailed error info |
+| `correlationId` | String | Correlation ID |
+| `triggeredBy` | String | Trigger source |
+| `createdAt` | Instant | Creation timestamp |
+| `startedAt` | Instant | Start timestamp |
+| `completedAt` | Instant | Completion timestamp |
+
+---
+
+## WorkflowStatus Enum
+
+| Status | Terminal | Description |
+|--------|----------|-------------|
+| `PENDING` | No | Created but not started |
+| `RUNNING` | No | Currently executing |
+| `WAITING` | No | Waiting for external event |
+| `COMPLETED` | Yes | Successfully completed |
+| `FAILED` | Yes | Failed with error |
+| `CANCELLED` | Yes | Cancelled by user |
+
+---
+
+## StepState Record
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `workflowId` | String | Workflow ID |
+| `instanceId` | String | Instance ID |
+| `stepId` | String | Step ID |
+| `status` | StepStatus | Step status |
+| `triggeredBy` | String | How step was triggered |
+| `input` | Map | Step input |
+| `output` | Object | Step output |
+| `errorMessage` | String | Error if failed |
+| `startedAt` | Instant | Start time |
+| `completedAt` | Instant | Completion time |
+| `durationMs` | Long | Execution duration |
+| `attemptNumber` | int | Retry attempt number |
+
+---
+
+## StepStatus Enum
+
+| Status | Description |
+|--------|-------------|
+| `PENDING` | Not yet executed |
+| `RUNNING` | Currently executing |
+| `COMPLETED` | Successfully completed |
+| `FAILED` | Failed with error |
+| `SKIPPED` | Skipped (condition false) |
+| `RETRYING` | Retrying after failure |
+
+---
+
+## Next Steps
+
+- [Getting Started](getting-started.md) - Basic tutorial
+- [Architecture](architecture.md) - System design
+- [Advanced Features](advanced-features.md) - Resilience4j, choreography, and more
+- [Configuration Reference](configuration.md) - All configuration options

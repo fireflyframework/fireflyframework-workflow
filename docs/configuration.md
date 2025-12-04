@@ -131,33 +131,189 @@ Configuration for the REST API.
 |----------|------|---------|-------------|
 | `api.enabled` | boolean | `true` | Enable REST API |
 | `api.base-path` | String | `/api/workflows` | Base path for endpoints |
-| `api.documentation-enabled` | boolean | `true` | Enable OpenAPI documentation |
 
-### Example
 
-```yaml
-firefly:
-  workflow:
-    api:
-      enabled: true
-      base-path: /api/workflows
-      documentation-enabled: true
-```
-
-## Resilience Configuration
-
-Configuration for Resilience4j patterns.
+### Circuit Breaker Configuration
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `resilience.enabled` | boolean | `true` | Enable resilience features |
+| `resilience.circuit-breaker.enabled` | boolean | `true` | Enable circuit breaker |
+| `resilience.circuit-breaker.failure-rate-threshold` | int | `50` | Failure rate % to open circuit |
+| `resilience.circuit-breaker.slow-call-rate-threshold` | int | `100` | Slow call rate % to open circuit |
+| `resilience.circuit-breaker.slow-call-duration-threshold` | Duration | `PT60S` | Duration to consider slow |
+| `resilience.circuit-breaker.permitted-number-of-calls-in-half-open-state` | int | `10` | Calls allowed in half-open |
+| `resilience.circuit-breaker.minimum-number-of-calls` | int | `10` | Min calls before calculating rate |
+| `resilience.circuit-breaker.sliding-window-type` | String | `COUNT_BASED` | `COUNT_BASED` or `TIME_BASED` |
+| `resilience.circuit-breaker.sliding-window-size` | int | `100` | Window size (calls or seconds) |
+| `resilience.circuit-breaker.wait-duration-in-open-state` | Duration | `PT60S` | Wait before half-open |
+| `resilience.circuit-breaker.automatic-transition-from-open-to-half-open-enabled` | boolean | `true` | Auto transition |
+| `resilience.circuit-breaker.record-exceptions` | String[] | `[]` | Exceptions to record as failures |
+| `resilience.circuit-breaker.ignore-exceptions` | String[] | `[]` | Exceptions to ignore |
 
-### Example
+### Rate Limiter Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `resilience.rate-limiter.enabled` | boolean | `false` | Enable rate limiter |
+| `resilience.rate-limiter.limit-for-period` | int | `50` | Calls per period |
+| `resilience.rate-limiter.limit-refresh-period` | Duration | `PT1S` | Period duration |
+| `resilience.rate-limiter.timeout-duration` | Duration | `PT5S` | Wait timeout for permit |
+
+### Bulkhead Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `resilience.bulkhead.enabled` | boolean | `false` | Enable bulkhead |
+| `resilience.bulkhead.max-concurrent-calls` | int | `25` | Max concurrent calls |
+| `resilience.bulkhead.max-wait-duration` | Duration | `PT0S` | Wait duration for permit |
+
+### Time Limiter Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `resilience.time-limiter.enabled` | boolean | `true` | Enable time limiter |
+| `resilience.time-limiter.timeout-duration` | Duration | `PT5M` | Timeout duration |
+| `resilience.time-limiter.cancel-running-future` | boolean | `true` | Cancel on timeout |
+
+### Complete Resilience Example
 
 ```yaml
 firefly:
   workflow:
     resilience:
       enabled: true
+      circuit-breaker:
+        enabled: true
+        failure-rate-threshold: 50
+        slow-call-rate-threshold: 100
+        slow-call-duration-threshold: PT60S
+        permitted-number-of-calls-in-half-open-state: 10
+        minimum-number-of-calls: 10
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 100
+        wait-duration-in-open-state: PT60S
+        automatic-transition-from-open-to-half-open-enabled: true
+      rate-limiter:
+        enabled: false
+        limit-for-period: 50
+        limit-refresh-period: PT1S
+        timeout-duration: PT5S
+      bulkhead:
+        enabled: false
+        max-concurrent-calls: 25
+        max-wait-duration: PT0S
+      time-limiter:
+        enabled: true
+        timeout-duration: PT5M
+        cancel-running-future: true
 ```
 
+## Duration Format
+
+All duration properties use ISO-8601 duration format:
+
+| Format | Description | Example |
+|--------|-------------|---------|
+| `PTnS` | n seconds | `PT30S` = 30 seconds |
+| `PTnM` | n minutes | `PT5M` = 5 minutes |
+| `PTnH` | n hours | `PT1H` = 1 hour |
+| `PnD` | n days | `P7D` = 7 days |
+
+Combined formats are also supported: `PT1H30M` = 1 hour 30 minutes
+
+## Complete Configuration Example
+
+```yaml
+firefly:
+  workflow:
+    enabled: true
+    default-timeout: PT1H
+    default-step-timeout: PT5M
+    metrics-enabled: true
+    health-enabled: true
+
+    state:
+      enabled: true
+      default-ttl: P7D
+      completed-ttl: P1D
+      key-prefix: workflow
+      compression-enabled: false
+
+    events:
+      enabled: true
+      publisher-type: AUTO
+      connection-id: default
+      default-destination: workflow-events
+      event-type-prefix: workflow
+      publish-step-events: true
+      include-context: false
+      include-output: true
+
+    retry:
+      max-attempts: 3
+      initial-delay: PT1S
+      max-delay: PT5M
+      multiplier: 2.0
+
+    api:
+      enabled: true
+      base-path: /api/workflows
+      documentation-enabled: true
+
+    resilience:
+      enabled: true
+      circuit-breaker:
+        enabled: true
+        failure-rate-threshold: 50
+      rate-limiter:
+        enabled: false
+      bulkhead:
+        enabled: false
+      time-limiter:
+        enabled: true
+        timeout-duration: PT5M
+```
+
+## Annotation Configuration
+
+Configuration can also be specified at the annotation level.
+
+### @Workflow Annotation
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `id` | String | Class name | Unique workflow identifier |
+| `name` | String | id | Human-readable name |
+| `description` | String | `""` | Workflow description |
+| `version` | String | `"1.0.0"` | Version number |
+| `triggerMode` | TriggerMode | `BOTH` | `SYNC`, `ASYNC`, or `BOTH` |
+| `triggerEventType` | String | `""` | Event type for async trigger |
+| `timeoutMs` | long | `0` | Timeout in ms (0 = use config) |
+| `maxRetries` | int | `3` | Default retry count for steps |
+| `retryDelayMs` | long | `1000` | Default retry delay in ms |
+| `publishEvents` | boolean | `true` | Publish lifecycle events |
+
+### @WorkflowStep Annotation
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `id` | String | Method name | Unique step identifier |
+| `name` | String | id | Human-readable name |
+| `description` | String | `""` | Step description |
+| `order` | int | `0` | Execution order (lower first) |
+| `async` | boolean | `false` | Execute in parallel |
+| `timeoutMs` | long | `0` | Timeout (0 = inherit) |
+| `maxRetries` | int | `-1` | Retry attempts (-1 = inherit) |
+| `retryDelayMs` | long | `-1` | Retry delay (-1 = inherit) |
+| `condition` | String | `""` | SpEL condition |
+| `inputEventType` | String | `""` | Event to trigger step |
+| `outputEventType` | String | `""` | Event to emit on completion |
+| `compensatable` | boolean | `false` | Reserved for saga |
+| `compensationMethod` | String | `""` | Reserved for saga |
+
+## Next Steps
+
+- [Getting Started](getting-started.md) - Basic tutorial
+- [Architecture](architecture.md) - System design
+- [Advanced Features](advanced-features.md) - Resilience4j, choreography, and more
+- [API Reference](api-reference.md) - REST and Java API documentation
