@@ -40,26 +40,51 @@ public class WorkflowRegistry {
 
     /**
      * Registers a workflow definition.
+     * <p>
+     * This method validates the workflow topology (dependencies) before registration.
+     * If validation fails, a {@link WorkflowValidationException} is thrown.
      *
      * @param workflow the workflow definition
+     * @throws WorkflowValidationException if the workflow has invalid dependencies
      */
     public void register(WorkflowDefinition workflow) {
         String id = workflow.workflowId();
-        
+
+        // Validate topology before registration
+        validateTopology(workflow);
+
         if (workflows.containsKey(id)) {
             log.warn("Overwriting existing workflow definition: {}", id);
         }
-        
+
         workflows.put(id, workflow);
-        
+
         // Register trigger pattern if present
         if (workflow.triggerEventType() != null && !workflow.triggerEventType().isEmpty()) {
             triggerPatterns.put(id, compilePattern(workflow.triggerEventType()));
         }
-        
+
         log.info("Registered workflow: id={}, name={}, version={}, triggerMode={}, steps={}",
-                id, workflow.name(), workflow.version(), workflow.triggerMode(), 
+                id, workflow.name(), workflow.version(), workflow.triggerMode(),
                 workflow.steps().size());
+    }
+
+    /**
+     * Validates the workflow topology (step dependencies).
+     *
+     * @param workflow the workflow to validate
+     * @throws WorkflowValidationException if validation fails
+     */
+    private void validateTopology(WorkflowDefinition workflow) {
+        if (workflow.steps().isEmpty()) {
+            return; // Empty workflow is valid
+        }
+
+        WorkflowTopology topology = new WorkflowTopology(workflow);
+        topology.validate(); // Throws WorkflowValidationException if invalid
+
+        log.debug("Workflow topology validated: id={}, steps={}",
+                workflow.workflowId(), workflow.steps().size());
     }
 
     /**

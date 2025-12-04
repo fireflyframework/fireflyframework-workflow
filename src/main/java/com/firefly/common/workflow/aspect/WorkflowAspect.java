@@ -25,7 +25,6 @@ import com.firefly.common.workflow.core.StepHandler;
 import com.firefly.common.workflow.core.WorkflowContext;
 import com.firefly.common.workflow.core.WorkflowRegistry;
 import com.firefly.common.workflow.model.RetryPolicy;
-import com.firefly.common.workflow.model.TriggerMode;
 import com.firefly.common.workflow.model.WorkflowDefinition;
 import com.firefly.common.workflow.model.WorkflowStepDefinition;
 import lombok.RequiredArgsConstructor;
@@ -152,7 +151,7 @@ public class WorkflowAspect implements BeanPostProcessor {
      */
     private WorkflowStepDefinition buildStepDefinition(
             String workflowId, Object bean, Method method, WorkflowStep annotation) {
-        
+
         String stepId = annotation.id().isEmpty() ? method.getName() : annotation.id();
 
         // Create a StepHandler that wraps the annotated method and register it
@@ -170,11 +169,18 @@ public class WorkflowAspect implements BeanPostProcessor {
                         new String[]{})
                 : null;
 
+        // Convert dependsOn array to list
+        List<String> dependsOnList = annotation.dependsOn().length > 0
+                ? List.of(annotation.dependsOn())
+                : List.of();
+
         return WorkflowStepDefinition.builder()
                 .stepId(stepId)
                 .name(annotation.name().isEmpty() ? stepId : annotation.name())
                 .description(annotation.description())
+                .dependsOn(dependsOnList)
                 .order(annotation.order())
+                .triggerMode(annotation.triggerMode())
                 .async(annotation.async())
                 .timeout(annotation.timeoutMs() > 0 ? Duration.ofMillis(annotation.timeoutMs()) : null)
                 .retryPolicy(retryPolicy)
