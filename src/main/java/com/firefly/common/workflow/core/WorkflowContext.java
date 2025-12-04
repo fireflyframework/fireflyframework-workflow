@@ -47,17 +47,47 @@ public class WorkflowContext {
     private final String currentStepId;
     private final Map<String, Object> localContext;
     private final ObjectMapper objectMapper;
+    private final boolean dryRun;
 
     public WorkflowContext(
             WorkflowDefinition workflowDefinition,
             WorkflowInstance workflowInstance,
             String currentStepId,
             ObjectMapper objectMapper) {
+        this(workflowDefinition, workflowInstance, currentStepId, objectMapper, false);
+    }
+
+    public WorkflowContext(
+            WorkflowDefinition workflowDefinition,
+            WorkflowInstance workflowInstance,
+            String currentStepId,
+            ObjectMapper objectMapper,
+            boolean dryRun) {
         this.workflowDefinition = workflowDefinition;
         this.workflowInstance = workflowInstance;
         this.currentStepId = currentStepId;
         this.localContext = new HashMap<>(workflowInstance.context());
         this.objectMapper = objectMapper;
+        this.dryRun = dryRun;
+    }
+
+    /**
+     * Checks if the workflow is running in dry-run mode.
+     * <p>
+     * In dry-run mode, steps should skip actual side effects like:
+     * <ul>
+     *   <li>External API calls</li>
+     *   <li>Database writes</li>
+     *   <li>Message publishing</li>
+     *   <li>File system modifications</li>
+     * </ul>
+     * <p>
+     * Steps can use this to return mock data for testing and validation.
+     *
+     * @return true if running in dry-run mode
+     */
+    public boolean isDryRun() {
+        return dryRun;
     }
 
     /**
@@ -246,7 +276,8 @@ public class WorkflowContext {
                 workflowDefinition, 
                 updatedInstance.withContext(localContext),
                 nextStepId,
-                objectMapper
+                objectMapper,
+                dryRun
         );
         next.localContext.putAll(this.localContext);
         return next;

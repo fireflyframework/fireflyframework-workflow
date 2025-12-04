@@ -51,4 +51,13 @@ public class StartWorkflowRequest {
      * Maximum wait time in milliseconds (for sync mode).
      */
     private long waitTimeoutMs = 30000;
+
+    /**
+     * Whether to run in dry-run mode.
+     * <p>
+     * In dry-run mode, steps can skip actual side effects like external API calls,
+     * database writes, and message publishing. Useful for testing workflow configuration
+     * and flow without executing actual business logic.
+     */
+    private boolean dryRun = false;
 }
