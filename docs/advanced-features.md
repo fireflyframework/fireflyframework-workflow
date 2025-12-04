@@ -1,6 +1,181 @@
 # Advanced Features
 
-This guide covers advanced features of the Firefly Workflow Engine including Resilience4j integration, step-level choreography, parallel execution, and SpEL conditions.
+This guide covers advanced features of the Firefly Workflow Engine including step dependencies, trigger modes, Resilience4j integration, step-level choreography, parallel execution, and SpEL conditions.
+
+## Step Dependencies with `dependsOn`
+
+The `dependsOn` attribute is the **recommended approach** for controlling step execution order. It provides explicit dependency management with automatic DAG validation.
+
+### Basic Usage
+
+Declare dependencies by specifying the IDs of steps that must complete first:
+
+```java
+@Workflow(id = "order-fulfillment")
+public class OrderFulfillmentWorkflow {
+
+    @WorkflowStep(id = "validate")
+    public Mono<Map<String, Object>> validate(WorkflowContext ctx) {
+        // Root step - no dependencies, executes first
+        return Mono.just(Map.of("valid", true));
+    }
+
+    @WorkflowStep(id = "check-inventory", dependsOn = {"validate"})
+    public Mono<Map<String, Object>> checkInventory(WorkflowContext ctx) {
+        // Executes after validate completes
+        return Mono.just(Map.of("inStock", true));
+    }
+
+    @WorkflowStep(id = "process-payment", dependsOn = {"validate"})
+    public Mono<Map<String, Object>> processPayment(WorkflowContext ctx) {
+        // Also executes after validate - parallel with check-inventory
+        return Mono.just(Map.of("paid", true));
+    }
+
+    @WorkflowStep(id = "ship", dependsOn = {"check-inventory", "process-payment"})
+    public Mono<Map<String, Object>> ship(WorkflowContext ctx) {
+        // Waits for BOTH check-inventory AND process-payment
+        return Mono.just(Map.of("shipped", true));
+    }
+}
+```
+
+### Execution Layers
+
+Steps are organized into execution layers based on their dependencies:
+
+| Layer | Steps | Description |
+|-------|-------|-------------|
+| 0 | `validate` | Root steps (no dependencies) |
+| 1 | `check-inventory`, `process-payment` | Steps depending only on Layer 0 |
+| 2 | `ship` | Steps depending on Layer 1 |
+
+**Key Benefits:**
+- Steps in the same layer can execute **in parallel** (if marked `async = true`)
+- Clear visualization of workflow structure
+- Automatic optimization of execution order
+
+### Validation
+
+The workflow engine validates dependencies during registration:
+
+1. **Missing Dependencies**: All referenced step IDs must exist
+   ```java
+   // ERROR: "payment" step doesn't exist
+   @WorkflowStep(id = "ship", dependsOn = {"payment"})
+   ```
+
+2. **Circular Dependencies**: No cycles allowed
+   ```java
+   // ERROR: Circular dependency detected
+   @WorkflowStep(id = "step-a", dependsOn = {"step-b"})
+   @WorkflowStep(id = "step-b", dependsOn = {"step-a"})
+   ```
+
+Validation errors throw `WorkflowValidationException` with descriptive messages.
+
+### Combining with Event-Driven Choreography
+
+The `dependsOn` attribute works seamlessly with event-driven patterns:
+
+```java
+@WorkflowStep(
+    id = "process-payment",
+    dependsOn = {"validate"},                    // Explicit dependency
+    triggerMode = StepTriggerMode.EVENT,         // Event-driven
+    inputEventType = "order.validated",          // Triggered by event
+    outputEventType = "payment.processed"        // Emits event
+)
+public Mono<PaymentResult> processPayment(WorkflowContext ctx) {
+    return paymentService.process(ctx.getInput("order", Order.class));
+}
+```
+
+### Migration from `order` Attribute
+
+The `order` attribute is still supported for backward compatibility:
+
+| Approach | Recommended | Use Case |
+|----------|-------------|----------|
+| `dependsOn` | ✅ Yes | New workflows, explicit dependencies |
+| `order` | ⚠️ Legacy | Existing workflows, simple sequences |
+
+**Migration Example:**
+
+```java
+// Before (order-based)
+@WorkflowStep(id = "step-a", order = 1)
+@WorkflowStep(id = "step-b", order = 2)
+@WorkflowStep(id = "step-c", order = 3)
+
+// After (dependency-based) - Recommended
+@WorkflowStep(id = "step-a")
+@WorkflowStep(id = "step-b", dependsOn = {"step-a"})
+@WorkflowStep(id = "step-c", dependsOn = {"step-b"})
+```
+
+When both `order` and `dependsOn` are specified, **dependencies take precedence**.
+
+## Step Trigger Modes
+
+The `StepTriggerMode` enum controls how a step can be invoked:
+
+### Available Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `EVENT` | Triggered by events only | Event-driven choreography (recommended) |
+| `PROGRAMMATIC` | Invoked via API only | Synchronous request-response |
+| `BOTH` | Supports both patterns | Maximum flexibility (default) |
+
+### Usage Examples
+
+```java
+// Event-driven step (recommended for choreography)
+@WorkflowStep(
+    id = "validate",
+    triggerMode = StepTriggerMode.EVENT,
+    inputEventType = "order.created",
+    outputEventType = "order.validated"
+)
+public Mono<ValidationResult> validate(WorkflowContext ctx) { ... }
+
+// Programmatic step (for API-driven workflows)
+@WorkflowStep(
+    id = "manual-review",
+    triggerMode = StepTriggerMode.PROGRAMMATIC
+)
+public Mono<ReviewResult> manualReview(WorkflowContext ctx) { ... }
+
+// Flexible step (supports both patterns)
+@WorkflowStep(
+    id = "process",
+    triggerMode = StepTriggerMode.BOTH,
+    inputEventType = "order.validated"  // Can also be triggered by event
+)
+public Mono<ProcessResult> process(WorkflowContext ctx) { ... }
+```
+
+### Checking Trigger Mode
+
+```java
+StepTriggerMode mode = StepTriggerMode.EVENT;
+
+if (mode.allowsEventTrigger()) {
+    // Step can be triggered by events
+}
+
+if (mode.allowsProgrammaticTrigger()) {
+    // Step can be invoked via API
+}
+```
+
+### Best Practices
+
+1. **Prefer `EVENT` mode** for event-driven choreography (the primary pattern)
+2. **Use `PROGRAMMATIC`** for steps that require synchronous API calls
+3. **Use `BOTH`** when migrating from programmatic to event-driven patterns
+4. **Document the expected invocation pattern** in step descriptions
 
 ## Resilience4j Integration
 
@@ -230,30 +405,37 @@ StepState state = workflowEngine.getStepState(
 
 ## Parallel Execution
 
-Execute multiple steps concurrently using `async = true`.
+Execute multiple steps concurrently using `async = true` combined with `dependsOn` for optimal parallel execution.
 
-### Defining Parallel Steps
+### Dependency-Based Parallel Execution (Recommended)
+
+Using `dependsOn`, steps in the same execution layer automatically run in parallel:
 
 ```java
 @Workflow(id = "parallel-workflow")
 public class ParallelWorkflow {
 
-    @WorkflowStep(id = "fetch-user", order = 1, async = true)
+    // Layer 0: Root steps - all execute in parallel
+    @WorkflowStep(id = "fetch-user", async = true)
     public Mono<User> fetchUser(WorkflowContext ctx) {
         return userService.findById(ctx.getInput("userId", String.class));
     }
 
-    @WorkflowStep(id = "fetch-products", order = 2, async = true)
+    @WorkflowStep(id = "fetch-products", async = true)
     public Mono<List<Product>> fetchProducts(WorkflowContext ctx) {
         return productService.findAll();
     }
 
-    @WorkflowStep(id = "fetch-inventory", order = 3, async = true)
+    @WorkflowStep(id = "fetch-inventory", async = true)
     public Mono<Inventory> fetchInventory(WorkflowContext ctx) {
         return inventoryService.getAvailable();
     }
 
-    @WorkflowStep(id = "create-order", order = 4)  // Sync - waits for all async
+    // Layer 1: Depends on all Layer 0 steps
+    @WorkflowStep(
+        id = "create-order",
+        dependsOn = {"fetch-user", "fetch-products", "fetch-inventory"}
+    )
     public Mono<Order> createOrder(WorkflowContext ctx) {
         User user = ctx.getStepOutput("fetch-user", User.class);
         List<Product> products = ctx.getStepOutput("fetch-products", List.class);
@@ -276,12 +458,32 @@ graph LR
     D --> END((End))
 ```
 
+### Execution Layers and Parallelism
+
+With `dependsOn`, the engine organizes steps into layers:
+
+| Layer | Steps | Execution |
+|-------|-------|-----------|
+| 0 | `fetch-user`, `fetch-products`, `fetch-inventory` | Parallel (all async) |
+| 1 | `create-order` | Sequential (waits for Layer 0) |
+
 ### Parallel Step Behavior
 
-- Consecutive `async = true` steps execute in parallel
-- A `sync` step (default) waits for all preceding async steps
+- Steps in the same layer with `async = true` execute in parallel
+- Steps with `dependsOn` wait for all dependencies to complete
 - Outputs from parallel steps are available via `ctx.getStepOutput()`
 - If any parallel step fails, the workflow fails
+
+### Legacy Order-Based Parallel Execution
+
+For backward compatibility, order-based parallel execution is still supported:
+
+```java
+// Legacy approach - still works but dependsOn is preferred
+@WorkflowStep(id = "fetch-user", order = 1, async = true)
+@WorkflowStep(id = "fetch-products", order = 1, async = true)  // Same order = parallel
+@WorkflowStep(id = "create-order", order = 2)  // Higher order = waits
+```
 
 ## SpEL Conditions
 

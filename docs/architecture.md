@@ -61,12 +61,21 @@ The main facade providing high-level API for workflow operations:
 
 Executes workflow steps with resilience patterns:
 
-- Manages step execution order
-- Handles parallel step execution
+- Manages step execution order via topology-based layers
+- Handles parallel step execution within dependency layers
 - Evaluates SpEL conditions
 - Applies retry logic
 - Persists step and workflow state
 - Publishes step events
+
+### WorkflowTopology
+
+Manages the dependency graph (DAG) of workflow steps:
+
+- Builds directed acyclic graph from `dependsOn` declarations
+- Validates dependencies exist and detects cycles
+- Computes execution layers using Kahn's algorithm
+- Enables parallel execution of independent steps
 
 ### WorkflowResilience
 
@@ -109,6 +118,127 @@ sequenceDiagram
     Executor->>Cache: Save workflow state (COMPLETED)
     Executor->>Events: Publish workflow.completed
     Engine->>Client: Return WorkflowInstance
+```
+
+## Topology-Based Execution
+
+The workflow engine uses a **topology-based execution model** where steps are organized into execution layers based on their dependencies. This is the recommended approach for controlling step execution order.
+
+### Dependency Graph (DAG)
+
+Steps declare dependencies using the `dependsOn` attribute, forming a Directed Acyclic Graph (DAG):
+
+```mermaid
+graph TD
+    subgraph "Workflow: order-fulfillment"
+        A[validate] --> B[check-inventory]
+        A --> C[process-payment]
+        B --> D[ship]
+        C --> D
+        D --> E[notify]
+    end
+```
+
+### Execution Layers
+
+The `WorkflowTopology` class uses **Kahn's algorithm** to compute execution layers:
+
+```mermaid
+graph LR
+    subgraph "Layer 0"
+        L0[validate]
+    end
+    subgraph "Layer 1 (parallel)"
+        L1A[check-inventory]
+        L1B[process-payment]
+    end
+    subgraph "Layer 2"
+        L2[ship]
+    end
+    subgraph "Layer 3"
+        L3[notify]
+    end
+
+    L0 --> L1A
+    L0 --> L1B
+    L1A --> L2
+    L1B --> L2
+    L2 --> L3
+```
+
+**Key Properties:**
+- **Layer 0**: Contains root steps (no dependencies)
+- **Subsequent Layers**: Steps whose dependencies are all in previous layers
+- **Parallel Execution**: Steps within the same layer can execute concurrently
+- **Deterministic Order**: Steps within a layer are sorted by `order` attribute
+
+### Topology Validation
+
+The topology is validated during workflow registration:
+
+```mermaid
+sequenceDiagram
+    participant Registry as WorkflowRegistry
+    participant Topology as WorkflowTopology
+    participant Validator as Validation
+
+    Registry->>Topology: new WorkflowTopology(definition)
+    Topology->>Topology: buildGraph()
+    Registry->>Topology: validate()
+    Topology->>Validator: validateDependenciesExist()
+    alt Missing dependency
+        Validator-->>Registry: WorkflowValidationException
+    end
+    Topology->>Validator: validateNoCycles()
+    alt Cycle detected
+        Validator-->>Registry: WorkflowValidationException
+    end
+    Topology-->>Registry: Validation passed
+    Registry->>Registry: Register workflow
+```
+
+**Validation Checks:**
+1. **Missing Dependencies**: All referenced step IDs must exist in the workflow
+2. **Cycle Detection**: No circular dependencies allowed (uses DFS with recursion stack)
+
+### Kahn's Algorithm Implementation
+
+The algorithm builds execution layers as follows:
+
+1. Calculate in-degree (number of dependencies) for each step
+2. Add all steps with in-degree 0 to the first layer
+3. For each step in the current layer:
+   - Mark as processed
+   - Decrement in-degree of dependent steps
+4. Repeat until all steps are processed
+
+```java
+// Simplified algorithm
+while (processed.size() < totalSteps) {
+    List<Step> currentLayer = steps.stream()
+        .filter(s -> inDegree.get(s) == 0 && !processed.contains(s))
+        .collect(toList());
+
+    layers.add(currentLayer);
+
+    for (Step step : currentLayer) {
+        processed.add(step);
+        for (Step dependent : getDependents(step)) {
+            inDegree.put(dependent, inDegree.get(dependent) - 1);
+        }
+    }
+}
+```
+
+### Backward Compatibility
+
+If no steps have explicit dependencies, the engine falls back to **order-based execution**:
+
+```mermaid
+graph LR
+    subgraph "Order-Based (Legacy)"
+        O1[order=1] --> O2[order=2] --> O3[order=3]
+    end
 ```
 
 ## Step-Level Choreography

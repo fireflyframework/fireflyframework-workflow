@@ -300,8 +300,10 @@ Configuration can also be specified at the annotation level.
 | `id` | String | Method name | Unique step identifier |
 | `name` | String | id | Human-readable name |
 | `description` | String | `""` | Step description |
-| `order` | int | `0` | Execution order (lower first) |
-| `async` | boolean | `false` | Execute in parallel |
+| `dependsOn` | String[] | `{}` | **Recommended**: Step IDs this step depends on |
+| `triggerMode` | StepTriggerMode | `BOTH` | How step can be invoked (EVENT, PROGRAMMATIC, BOTH) |
+| `order` | int | `0` | Execution order (legacy, prefer `dependsOn`) |
+| `async` | boolean | `false` | Execute in parallel within layer |
 | `timeoutMs` | long | `0` | Timeout (0 = inherit) |
 | `maxRetries` | int | `-1` | Retry attempts (-1 = inherit) |
 | `retryDelayMs` | long | `-1` | Retry delay (-1 = inherit) |
@@ -310,6 +312,34 @@ Configuration can also be specified at the annotation level.
 | `outputEventType` | String | `""` | Event to emit on completion |
 | `compensatable` | boolean | `false` | Reserved for saga |
 | `compensationMethod` | String | `""` | Reserved for saga |
+
+### StepTriggerMode Enum
+
+| Value | Description |
+|-------|-------------|
+| `EVENT` | Step is triggered by events only (recommended for choreography) |
+| `PROGRAMMATIC` | Step is invoked via API only |
+| `BOTH` | Supports both patterns (default) |
+
+### Dependency Management
+
+The `dependsOn` attribute is the **recommended approach** for controlling step execution order:
+
+```java
+// Root step (no dependencies)
+@WorkflowStep(id = "validate")
+
+// Step with single dependency
+@WorkflowStep(id = "process", dependsOn = {"validate"})
+
+// Step with multiple dependencies (waits for all)
+@WorkflowStep(id = "ship", dependsOn = {"check-inventory", "process-payment"})
+```
+
+**Validation:**
+- All referenced step IDs must exist in the workflow
+- Circular dependencies are not allowed
+- Validation errors throw `WorkflowValidationException`
 
 ## Next Steps
 

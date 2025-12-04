@@ -63,7 +63,15 @@ GET /api/v1/workflows/{workflowId}
     {
       "stepId": "validate",
       "name": "Validate Order",
-      "order": 1,
+      "dependsOn": [],
+      "triggerMode": "EVENT",
+      "async": false
+    },
+    {
+      "stepId": "process-payment",
+      "name": "Process Payment",
+      "dependsOn": ["validate"],
+      "triggerMode": "EVENT",
       "async": false
     }
   ]
@@ -584,6 +592,38 @@ The `WorkflowInstance` record contains workflow execution state:
 | `FAILED` | Failed with error |
 | `SKIPPED` | Skipped (condition false) |
 | `RETRYING` | Retrying after failure |
+
+---
+
+## StepTriggerMode Enum
+
+| Mode | Description |
+|------|-------------|
+| `EVENT` | Step is triggered by events only (recommended for choreography) |
+| `PROGRAMMATIC` | Step is invoked via API only |
+| `BOTH` | Supports both patterns (default) |
+
+---
+
+## WorkflowStepDefinition Fields
+
+Step definitions returned by the API include:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `stepId` | String | Unique step identifier |
+| `name` | String | Human-readable name |
+| `description` | String | Step description |
+| `dependsOn` | String[] | Step IDs this step depends on |
+| `triggerMode` | StepTriggerMode | How step can be invoked |
+| `order` | int | Execution order (legacy) |
+| `async` | boolean | Execute in parallel |
+| `inputEventType` | String | Event to trigger step |
+| `outputEventType` | String | Event to emit on completion |
+| `condition` | String | SpEL condition |
+| `timeoutMs` | long | Timeout in milliseconds |
+| `maxRetries` | int | Retry attempts |
+| `retryDelayMs` | long | Retry delay |
 
 ---
 

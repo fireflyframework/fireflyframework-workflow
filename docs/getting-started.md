@@ -51,8 +51,8 @@ public class HelloWorldWorkflow {
 
     @WorkflowStep(
         id = "greet",
-        name = "Generate Greeting",
-        order = 1
+        name = "Generate Greeting"
+        // No dependsOn = root step, executes first
     )
     public Mono<Map<String, Object>> greet(WorkflowContext ctx) {
         String name = ctx.getInput("name", String.class);
@@ -65,7 +65,7 @@ public class HelloWorldWorkflow {
     @WorkflowStep(
         id = "log-result",
         name = "Log Result",
-        order = 2
+        dependsOn = {"greet"}  // Executes after "greet" completes
     )
     public Mono<Map<String, Object>> logResult(WorkflowContext ctx) {
         Map<String, Object> greetOutput = ctx.getStepOutput("greet", Map.class);
@@ -129,9 +129,9 @@ public class OrderProcessingWorkflow {
     @WorkflowStep(
         id = "validate",
         name = "Validate Order",
-        order = 1,
-        inputEventType = "order.created",    // Step triggered by this event
-        outputEventType = "order.validated"  // Emits this event on completion
+        triggerMode = StepTriggerMode.EVENT,  // Event-driven (recommended)
+        inputEventType = "order.created",     // Step triggered by this event
+        outputEventType = "order.validated"   // Emits this event on completion
     )
     public Mono<Map<String, Object>> validateOrder(WorkflowContext ctx) {
         String orderId = ctx.getInput("orderId", String.class);
@@ -150,8 +150,9 @@ public class OrderProcessingWorkflow {
     @WorkflowStep(
         id = "process-payment",
         name = "Process Payment",
-        order = 2,
-        inputEventType = "order.validated",   // Triggered by previous step's event
+        dependsOn = {"validate"},              // Explicit dependency (recommended)
+        triggerMode = StepTriggerMode.EVENT,
+        inputEventType = "order.validated",    // Triggered by previous step's event
         outputEventType = "payment.processed"
     )
     public Mono<Map<String, Object>> processPayment(WorkflowContext ctx) {
@@ -170,7 +171,8 @@ public class OrderProcessingWorkflow {
     @WorkflowStep(
         id = "ship-order",
         name = "Ship Order",
-        order = 3,
+        dependsOn = {"process-payment"},       // Explicit dependency
+        triggerMode = StepTriggerMode.EVENT,
         inputEventType = "payment.processed",
         outputEventType = "order.shipped"
     )
@@ -310,7 +312,7 @@ Use SpEL expressions to conditionally execute steps:
 @WorkflowStep(
     id = "premium-processing",
     name = "Premium Processing",
-    order = 3,
+    dependsOn = {"validate"},                  // Explicit dependency
     condition = "#input['tier'] == 'premium'"
 )
 public Mono<Map<String, Object>> premiumProcessing(WorkflowContext ctx) {
@@ -326,20 +328,22 @@ SpEL variables available:
 
 ## Step 6: Add Parallel Steps
 
-Mark consecutive steps with `async = true` to execute them in parallel:
+Use `dependsOn` with `async = true` to execute steps in parallel. Steps in the same execution layer run concurrently:
 
 ```java
-@WorkflowStep(id = "fetch-user", order = 1, async = true)
+// Layer 0: Both steps have no dependencies, execute in parallel
+@WorkflowStep(id = "fetch-user", async = true)
 public Mono<User> fetchUser(WorkflowContext ctx) {
     return userService.findById(ctx.getInput("userId", String.class));
 }
 
-@WorkflowStep(id = "fetch-products", order = 2, async = true)
+@WorkflowStep(id = "fetch-products", async = true)
 public Mono<List<Product>> fetchProducts(WorkflowContext ctx) {
     return productService.findAll();
 }
 
-@WorkflowStep(id = "combine", order = 3)  // Waits for parallel steps
+// Layer 1: Depends on both parallel steps
+@WorkflowStep(id = "combine", dependsOn = {"fetch-user", "fetch-products"})
 public Mono<Order> combine(WorkflowContext ctx) {
     User user = ctx.getStepOutput("fetch-user", User.class);
     List<Product> products = ctx.getStepOutput("fetch-products", List.class);
@@ -355,7 +359,6 @@ Configure automatic retries for steps that may fail:
 @WorkflowStep(
     id = "call-external-api",
     name = "Call External API",
-    order = 1,
     maxRetries = 3,
     retryDelayMs = 1000  // 1 second between retries
 )
@@ -370,7 +373,7 @@ public Mono<Map<String, Object>> callExternalApi(WorkflowContext ctx) {
 The `WorkflowContext` provides access to all workflow data:
 
 ```java
-@WorkflowStep(id = "process", order = 2)
+@WorkflowStep(id = "process", dependsOn = {"validate"})
 public Mono<Map<String, Object>> process(WorkflowContext ctx) {
     // Workflow metadata
     String instanceId = ctx.getInstanceId();

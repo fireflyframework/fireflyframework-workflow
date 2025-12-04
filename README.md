@@ -35,10 +35,11 @@ Use `lib-transactional-engine` when you need distributed transaction guarantees 
 |---------|-------------|
 | **📡 Event-Driven Architecture** | Workflows triggered by events, steps that listen for and emit events |
 | **🔄 Step-Level Choreography** | Independent step triggering via events with per-step state persistence |
+| **🔗 Dependency Management** | Explicit step dependencies via `dependsOn` with DAG validation |
 | **🎯 Annotation-Based Workflows** | Define workflows using `@Workflow` and `@WorkflowStep` annotations |
 | **💾 State Persistence** | Persist workflow and step states using Redis via `lib-common-cache` |
 | **🛡️ Resilience4j Integration** | Circuit breaker, rate limiter, bulkhead, and time limiter |
-| **⚡ Parallel Execution** | Execute async steps concurrently |
+| **⚡ Parallel Execution** | Execute async steps concurrently within dependency layers |
 | **🔀 Conditional Steps** | Skip steps based on SpEL expressions |
 | **📊 Observability** | OpenTelemetry tracing and Micrometer metrics |
 | **🌐 REST API** | Standardized API for workflow and step operations |
@@ -70,7 +71,7 @@ Add the dependency to your `pom.xml`:
 
 ### Define an Event-Driven Workflow
 
-The recommended pattern is to define workflows that are triggered by events and use step-level choreography:
+The recommended pattern is to define workflows that are triggered by events and use **explicit step dependencies** via `dependsOn`:
 
 ```java
 @Workflow(
@@ -84,7 +85,7 @@ public class OrderProcessingWorkflow {
     @WorkflowStep(
         id = "validate",
         name = "Validate Order",
-        order = 1,
+        triggerMode = StepTriggerMode.EVENT,    // Event-driven (recommended)
         inputEventType = "order.created",       // Step triggered by event
         outputEventType = "order.validated"     // Emits event on completion
     )
@@ -96,7 +97,8 @@ public class OrderProcessingWorkflow {
     @WorkflowStep(
         id = "process",
         name = "Process Order",
-        order = 2,
+        dependsOn = {"validate"},               // Explicit dependency (recommended)
+        triggerMode = StepTriggerMode.EVENT,
         inputEventType = "order.validated",     // Triggered by previous step's event
         outputEventType = "order.processed"
     )
@@ -105,6 +107,8 @@ public class OrderProcessingWorkflow {
     }
 }
 ```
+
+> **Note**: The `dependsOn` attribute is the **recommended approach** for controlling step execution order. It provides explicit dependency management with DAG validation, cycle detection, and better maintainability compared to the legacy `order` attribute.
 
 ### Trigger via Event
 
@@ -184,6 +188,8 @@ Event-driven workflows are the **primary and recommended pattern** for using thi
 | `@Workflow(triggerEventType = "...")` | Event type that triggers the entire workflow |
 | `@Workflow(triggerMode = TriggerMode.ASYNC)` | Workflow can only be triggered by events |
 | `@Workflow(triggerMode = TriggerMode.BOTH)` | Workflow can be triggered by events or REST API |
+| `@WorkflowStep(dependsOn = {"..."})` | **Recommended**: Explicit step dependencies |
+| `@WorkflowStep(triggerMode = StepTriggerMode.EVENT)` | Step invocation pattern (EVENT, PROGRAMMATIC, BOTH) |
 | `@WorkflowStep(inputEventType = "...")` | Event type that triggers this specific step |
 | `@WorkflowStep(outputEventType = "...")` | Event type emitted when step completes |
 
@@ -210,6 +216,59 @@ firefly:
 ```
 
 For more details, see [Advanced Features: Event-Driven Workflows](docs/advanced-features.md#step-level-choreography).
+
+## 🔗 Step Dependencies with `dependsOn`
+
+The `dependsOn` attribute is the **recommended approach** for controlling step execution order. It provides:
+
+- **Explicit Dependencies**: Clearly declare which steps must complete before a step can execute
+- **DAG Validation**: Automatic detection of circular dependencies and missing steps
+- **Layer-Based Execution**: Steps are organized into execution layers for optimal parallel execution
+- **Better Maintainability**: Self-documenting code that clearly shows step relationships
+
+### Example with Dependencies
+
+```java
+@Workflow(id = "order-fulfillment")
+public class OrderFulfillmentWorkflow {
+
+    @WorkflowStep(id = "validate")  // Root step - no dependencies
+    public Mono<Map<String, Object>> validate(WorkflowContext ctx) { ... }
+
+    @WorkflowStep(id = "check-inventory", dependsOn = {"validate"})
+    public Mono<Map<String, Object>> checkInventory(WorkflowContext ctx) { ... }
+
+    @WorkflowStep(id = "process-payment", dependsOn = {"validate"})
+    public Mono<Map<String, Object>> processPayment(WorkflowContext ctx) { ... }
+
+    @WorkflowStep(id = "ship", dependsOn = {"check-inventory", "process-payment"})
+    public Mono<Map<String, Object>> ship(WorkflowContext ctx) { ... }
+}
+```
+
+This creates the following execution DAG:
+
+```
+        ┌─────────────┐
+        │  validate   │  Layer 0
+        └──────┬──────┘
+               │
+       ┌───────┴───────┐
+       ▼               ▼
+┌─────────────┐ ┌─────────────┐
+│check-inventory│ │process-payment│  Layer 1 (parallel)
+└──────┬──────┘ └──────┬──────┘
+       │               │
+       └───────┬───────┘
+               ▼
+        ┌─────────────┐
+        │    ship     │  Layer 2
+        └─────────────┘
+```
+
+> **Migration Note**: The `order` attribute is still supported for backward compatibility, but `dependsOn` is preferred for new workflows. When both are specified, dependencies take precedence.
+
+For more details, see [Advanced Features: Step Dependencies](docs/advanced-features.md#step-dependencies-with-dependson).
 
 ## 🔧 Configuration
 
