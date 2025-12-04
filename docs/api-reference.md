@@ -105,6 +105,7 @@ Content-Type: application/json
 | `correlationId` | string | No | Correlation ID for tracking |
 | `waitForCompletion` | boolean | No | Wait for workflow to complete |
 | `waitTimeoutMs` | long | No | Timeout when waiting (default: 30000) |
+| `dryRun` | boolean | No | Run without side effects (default: false) |
 
 **Response (201 Created):**
 
@@ -214,6 +215,106 @@ POST /api/v1/workflows/{workflowId}/instances/{instanceId}/retry
   "currentStepId": "process-payment"
 }
 ```
+
+### Suspend Workflow
+
+Suspends a running workflow. Useful during incidents or downstream outages.
+
+```http
+POST /api/v1/workflows/{workflowId}/instances/{instanceId}/suspend
+Content-Type: application/json
+
+{
+  "reason": "Downstream service outage"
+}
+```
+
+**Response:**
+
+```json
+{
+  "instanceId": "inst-789",
+  "workflowId": "order-processing",
+  "status": "SUSPENDED",
+  "suspendedAt": "2025-01-15T10:35:00Z",
+  "suspendReason": "Downstream service outage"
+}
+```
+
+### Resume Workflow
+
+Resumes a suspended workflow.
+
+```http
+POST /api/v1/workflows/{workflowId}/instances/{instanceId}/resume
+```
+
+**Response:**
+
+```json
+{
+  "instanceId": "inst-789",
+  "workflowId": "order-processing",
+  "status": "RUNNING"
+}
+```
+
+### Get Workflow Topology
+
+Gets the workflow DAG (nodes and edges) for visualization with React Flow or Mermaid.js.
+
+```http
+GET /api/v1/workflows/{workflowId}/topology
+```
+
+**Response:**
+
+```json
+{
+  "workflowId": "order-processing",
+  "workflowName": "Order Processing",
+  "nodes": [
+    {
+      "id": "validate",
+      "label": "Validate Order",
+      "type": "step",
+      "status": null,
+      "async": false,
+      "layer": 0
+    },
+    {
+      "id": "process",
+      "label": "Process Payment",
+      "type": "step",
+      "status": null,
+      "async": false,
+      "layer": 1
+    }
+  ],
+  "edges": [
+    {
+      "source": "validate",
+      "target": "process",
+      "label": "dependsOn"
+    }
+  ],
+  "metadata": {
+    "totalSteps": 2,
+    "maxParallelism": 1,
+    "layerCount": 2
+  }
+}
+```
+
+### Get Instance Topology
+
+Gets the topology with step execution status for progress visualization.
+
+```http
+GET /api/v1/workflows/{workflowId}/instances/{instanceId}/topology
+```
+
+**Response:** Same as above, but `status` fields are populated with step execution status.
 
 ### List Instances
 
@@ -334,6 +435,100 @@ GET /api/v1/workflows/{workflowId}/instances/{instanceId}/state
   "nextStepId": "ship",
   "createdAt": "2025-01-15T10:30:00Z",
   "updatedAt": "2025-01-15T10:30:01Z"
+}
+```
+
+---
+
+## Dead Letter Queue (DLQ) Endpoints
+
+Endpoints for managing failed workflow entries. Available at `/api/v1/workflows/dlq`.
+
+### List DLQ Entries
+
+```http
+GET /api/v1/workflows/dlq
+GET /api/v1/workflows/dlq?workflowId=order-processing
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `workflowId` | string | Filter by workflow ID |
+| `instanceId` | string | Filter by instance ID |
+
+**Response:**
+
+```json
+[
+  {
+    "id": "dlq-123",
+    "workflowId": "order-processing",
+    "instanceId": "inst-789",
+    "stepId": "process-payment",
+    "stepName": "Process Payment",
+    "errorMessage": "Payment gateway timeout",
+    "errorType": "java.util.concurrent.TimeoutException",
+    "attemptCount": 3,
+    "correlationId": "corr-456",
+    "triggeredBy": "event:order.validated",
+    "createdAt": "2025-01-15T10:35:00Z",
+    "lastAttemptAt": "2025-01-15T10:35:30Z"
+  }
+]
+```
+
+### Get DLQ Entry
+
+```http
+GET /api/v1/workflows/dlq/{id}
+```
+
+### Replay DLQ Entry
+
+Replays a failed workflow/step from the DLQ.
+
+```http
+POST /api/v1/workflows/dlq/{id}/replay
+Content-Type: application/json
+
+{
+  "modifiedInput": {
+    "retryToken": "new-token"
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "entryId": "dlq-123",
+  "success": true,
+  "instanceId": "inst-new-456",
+  "errorMessage": null
+}
+```
+
+### Delete DLQ Entry
+
+```http
+DELETE /api/v1/workflows/dlq/{id}
+```
+
+### Get DLQ Count
+
+```http
+GET /api/v1/workflows/dlq/count
+GET /api/v1/workflows/dlq/count?workflowId=order-processing
+```
+
+**Response:**
+
+```json
+{
+  "count": 5
 }
 ```
 
@@ -557,6 +752,7 @@ The `WorkflowInstance` record contains workflow execution state:
 | `PENDING` | No | Created but not started |
 | `RUNNING` | No | Currently executing |
 | `WAITING` | No | Waiting for external event |
+| `SUSPENDED` | No | Paused by operator |
 | `COMPLETED` | Yes | Successfully completed |
 | `FAILED` | Yes | Failed with error |
 | `CANCELLED` | Yes | Cancelled by user |

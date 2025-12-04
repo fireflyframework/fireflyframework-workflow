@@ -665,6 +665,254 @@ WorkflowDefinition definition = WorkflowDefinition.builder()
 workflowEngine.registerWorkflow(definition);
 ```
 
+## Scheduled Workflows (Cron)
+
+Schedule workflows to run automatically using cron expressions or fixed intervals.
+
+### @ScheduledWorkflow Annotation
+
+```java
+@Workflow(id = "daily-report")
+@ScheduledWorkflow(
+    cron = "0 0 2 * * *",              // Run at 2 AM daily
+    zone = "America/New_York",
+    description = "Daily report generation",
+    input = "{\"type\": \"daily\"}"
+)
+public class DailyReportWorkflow {
+    @WorkflowStep(id = "generate")
+    public Mono<Map<String, Object>> generate(WorkflowContext ctx) {
+        return reportService.generateDaily();
+    }
+}
+```
+
+### Annotation Attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `cron` | String | Cron expression (Spring format) |
+| `zone` | String | Timezone (default: system default) |
+| `fixedDelay` | long | Fixed delay in ms between runs |
+| `fixedRate` | long | Fixed rate in ms between runs |
+| `initialDelay` | long | Initial delay in ms before first run |
+| `input` | String | JSON input for the workflow |
+| `description` | String | Description for logging |
+
+### Multiple Schedules
+
+Use `@ScheduledWorkflows` for multiple schedules:
+
+```java
+@Workflow(id = "multi-schedule")
+@ScheduledWorkflows({
+    @ScheduledWorkflow(cron = "0 0 * * * *", input = "{\"mode\": \"hourly\"}"),
+    @ScheduledWorkflow(cron = "0 0 0 * * *", input = "{\"mode\": \"daily\"}")
+})
+public class MultiScheduleWorkflow { ... }
+```
+
+### Configuration
+
+```yaml
+firefly:
+  workflow:
+    scheduling:
+      enabled: true
+      pool-size: 5
+```
+
+## Dry-Run Mode
+
+Test workflows without executing side effects.
+
+### Starting in Dry-Run Mode
+
+```bash
+POST /api/v1/workflows/order-processing/start
+{
+  "input": {"orderId": "TEST-123"},
+  "dryRun": true
+}
+```
+
+### Checking Dry-Run in Steps
+
+```java
+@WorkflowStep(id = "send-email")
+public Mono<Map<String, Object>> sendEmail(WorkflowContext ctx) {
+    if (ctx.isDryRun()) {
+        log.info("DRY-RUN: Would send email to {}", ctx.getInput("email"));
+        return Mono.just(Map.of("sent", false, "dryRun", true));
+    }
+    return emailService.send(ctx.getInput("email", String.class))
+        .map(result -> Map.of("sent", true));
+}
+```
+
+### Programmatic Dry-Run
+
+```java
+Mono<WorkflowInstance> instance = workflowEngine.startWorkflow(
+    "order-processing",
+    Map.of("orderId", "TEST-123"),
+    null,       // correlationId
+    "test",     // triggeredBy
+    true        // dryRun
+);
+```
+
+## Workflow Suspension & Resumption
+
+Pause workflows during incidents and resume them later.
+
+### Suspend a Workflow
+
+```bash
+POST /api/v1/workflows/order-processing/instances/inst-123/suspend
+{
+  "reason": "Downstream payment service outage"
+}
+```
+
+### Resume a Workflow
+
+```bash
+POST /api/v1/workflows/order-processing/instances/inst-123/resume
+```
+
+### Programmatic Suspension
+
+```java
+// Suspend
+Mono<WorkflowInstance> suspended = workflowEngine.suspendWorkflow(
+    "order-processing",
+    instanceId,
+    "Manual suspension for investigation"
+);
+
+// Resume
+Mono<WorkflowInstance> resumed = workflowEngine.resumeWorkflow(
+    "order-processing",
+    instanceId
+);
+
+// Find all suspended instances
+Flux<WorkflowInstance> suspended = workflowEngine.findSuspendedInstances();
+```
+
+### Status Guards
+
+```java
+WorkflowStatus status = instance.status();
+if (status.canSuspend()) {
+    // Workflow can be suspended (RUNNING or WAITING)
+}
+if (status.canResume()) {
+    // Workflow can be resumed (SUSPENDED)
+}
+```
+
+## Dead Letter Queue (DLQ) Management
+
+Manage and replay failed workflows.
+
+### Auto-Save on Failure
+
+When a workflow fails after exhausting retries, it's automatically saved to the DLQ:
+
+```yaml
+firefly:
+  workflow:
+    dlq:
+      enabled: true
+      auto-save-on-failure: true
+      retention-period: P30D
+```
+
+### View DLQ Entries
+
+```bash
+GET /api/v1/workflows/dlq
+GET /api/v1/workflows/dlq?workflowId=order-processing
+```
+
+### Replay a Failed Workflow
+
+```bash
+POST /api/v1/workflows/dlq/dlq-123/replay
+{
+  "modifiedInput": {
+    "retryToken": "new-token"
+  }
+}
+```
+
+### Programmatic DLQ Access
+
+```java
+@Autowired
+private DeadLetterService dlqService;
+
+// List entries
+Flux<DeadLetterEntry> entries = dlqService.getAllEntries();
+
+// Replay an entry
+Mono<ReplayResult> result = dlqService.replay("dlq-123");
+
+// Replay with modified input
+Mono<ReplayResult> result = dlqService.replay(
+    "dlq-123",
+    Map.of("retryToken", "new-value")
+);
+
+// Delete an entry
+Mono<Boolean> deleted = dlqService.delete("dlq-123");
+```
+
+## Topology Visualization
+
+Get workflow DAG for frontend visualization.
+
+### Get Workflow Topology
+
+```bash
+GET /api/v1/workflows/order-processing/topology
+```
+
+**Response (for React Flow / Mermaid.js):**
+
+```json
+{
+  "workflowId": "order-processing",
+  "nodes": [
+    {"id": "validate", "label": "Validate", "layer": 0},
+    {"id": "process", "label": "Process", "layer": 1}
+  ],
+  "edges": [
+    {"source": "validate", "target": "process"}
+  ]
+}
+```
+
+### Instance Topology with Status
+
+```bash
+GET /api/v1/workflows/order-processing/instances/inst-123/topology
+```
+
+Returns the same structure with `status` fields populated.
+
+### Programmatic Access
+
+```java
+Optional<WorkflowTopologyResponse> topology = 
+    workflowService.getTopology("order-processing");
+
+Mono<WorkflowTopologyResponse> instanceTopology =
+    workflowService.getTopology("order-processing", instanceId);
+```
+
 ## Next Steps
 
 - [Getting Started](getting-started.md) - Basic tutorial

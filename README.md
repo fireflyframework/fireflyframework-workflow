@@ -44,6 +44,11 @@ Use `lib-transactional-engine` when you need distributed transaction guarantees 
 | **📊 Observability** | OpenTelemetry tracing and Micrometer metrics |
 | **🌐 REST API** | Standardized API for workflow and step operations |
 | **⚛️ Reactive Architecture** | Built on Project Reactor for non-blocking execution |
+| **⏱️ Scheduled Workflows** | Cron-based workflow scheduling with `@ScheduledWorkflow` |
+| **⏸️ Suspension & Resumption** | Pause and resume workflows during incidents |
+| **🔍 Dry-Run Mode** | Test workflows without executing side effects |
+| **📈 Topology Visualization** | DAG visualization for React Flow / Mermaid.js |
+| **📥 Dead Letter Queue** | DLQ management for failed workflow replay |
 
 ## 📚 Documentation
 

@@ -132,6 +132,57 @@ Configuration for the REST API.
 | `api.enabled` | boolean | `true` | Enable REST API |
 | `api.base-path` | String | `/api/workflows` | Base path for endpoints |
 
+## Scheduling Configuration
+
+Configuration for cron-based workflow scheduling.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `scheduling.enabled` | boolean | `true` | Enable scheduled workflows |
+| `scheduling.pool-size` | int | `5` | Thread pool size for scheduler |
+| `scheduling.thread-name-prefix` | String | `workflow-scheduler-` | Thread name prefix |
+| `scheduling.wait-for-tasks-to-complete-on-shutdown` | boolean | `true` | Wait for tasks on shutdown |
+| `scheduling.await-termination-seconds` | int | `30` | Timeout for shutdown wait |
+
+### Example
+
+```yaml
+firefly:
+  workflow:
+    scheduling:
+      enabled: true
+      pool-size: 5
+      thread-name-prefix: workflow-scheduler-
+      wait-for-tasks-to-complete-on-shutdown: true
+      await-termination-seconds: 30
+```
+
+## Dead Letter Queue (DLQ) Configuration
+
+Configuration for failed workflow management.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `dlq.enabled` | boolean | `true` | Enable DLQ |
+| `dlq.max-replay-attempts` | int | `3` | Max replay attempts |
+| `dlq.retention-period` | Duration | `P30D` | Retention period for DLQ entries |
+| `dlq.auto-save-on-failure` | boolean | `true` | Auto-save failed workflows to DLQ |
+| `dlq.include-stack-trace` | boolean | `true` | Include stack traces in entries |
+
+### Example
+
+```yaml
+firefly:
+  workflow:
+    dlq:
+      enabled: true
+      max-replay-attempts: 3
+      retention-period: P30D
+      auto-save-on-failure: true
+      include-stack-trace: true
+```
+
+## Resilience Configuration
 
 ### Circuit Breaker Configuration
 
