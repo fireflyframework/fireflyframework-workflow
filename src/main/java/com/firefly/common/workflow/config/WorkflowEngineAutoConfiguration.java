@@ -27,6 +27,7 @@ import com.firefly.common.workflow.event.WorkflowEventPublisher;
 import com.firefly.common.workflow.health.WorkflowEngineHealthIndicator;
 import com.firefly.common.workflow.properties.WorkflowProperties;
 import com.firefly.common.workflow.rest.WorkflowController;
+import com.firefly.common.workflow.service.WorkflowService;
 import com.firefly.common.workflow.metrics.WorkflowMetrics;
 import com.firefly.common.workflow.resilience.WorkflowResilience;
 import com.firefly.common.workflow.state.CacheStepStateStore;
@@ -160,14 +161,24 @@ public class WorkflowEngineAutoConfiguration {
     }
 
     /**
+     * Service layer for workflow operations.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WorkflowService workflowService(WorkflowEngine workflowEngine) {
+        log.info("Creating WorkflowService");
+        return new WorkflowService(workflowEngine);
+    }
+
+    /**
      * REST API Configuration - conditionally enabled.
      */
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "firefly.workflow.api", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public WorkflowController workflowController(WorkflowEngine workflowEngine) {
+    public WorkflowController workflowController(WorkflowService workflowService) {
         log.info("Creating WorkflowController REST API");
-        return new WorkflowController(workflowEngine);
+        return new WorkflowController(workflowService);
     }
 
     /**

@@ -16,15 +16,18 @@
 
 package com.firefly.common.workflow.rest;
 
-import com.firefly.common.workflow.core.WorkflowEngine;
 import com.firefly.common.workflow.exception.StepExecutionException;
 import com.firefly.common.workflow.exception.WorkflowNotFoundException;
-import com.firefly.common.workflow.model.*;
+import com.firefly.common.workflow.model.WorkflowDefinition;
+import com.firefly.common.workflow.model.WorkflowStatus;
 import com.firefly.common.workflow.rest.dto.StartWorkflowRequest;
 import com.firefly.common.workflow.rest.dto.StepStateResponse;
 import com.firefly.common.workflow.rest.dto.TriggerStepRequest;
 import com.firefly.common.workflow.rest.dto.WorkflowStateResponse;
 import com.firefly.common.workflow.rest.dto.WorkflowStatusResponse;
+import com.firefly.common.workflow.service.WorkflowService;
+import com.firefly.common.workflow.service.WorkflowService.WorkflowResult;
+import com.firefly.common.workflow.service.WorkflowService.WorkflowSummary;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -34,12 +37,14 @@ import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
 /**
  * REST controller for workflow operations.
+ * <p>
+ * This controller is a thin layer that handles HTTP request/response mapping
+ * and delegates all business logic to the {@link WorkflowService}.
  * <p>
  * Provides endpoints for:
  * <ul>
@@ -58,17 +63,14 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class WorkflowController {
 
-    private final WorkflowEngine workflowEngine;
+    private final WorkflowService workflowService;
 
     /**
      * Lists all registered workflows.
      */
     @GetMapping
     public Mono<ResponseEntity<List<WorkflowSummary>>> listWorkflows() {
-        List<WorkflowSummary> summaries = workflowEngine.getAllWorkflows().stream()
-                .map(WorkflowSummary::from)
-                .toList();
-        return Mono.just(ResponseEntity.ok(summaries));
+        return Mono.just(ResponseEntity.ok(workflowService.listWorkflows()));
     }
 
     /**
@@ -76,7 +78,7 @@ public class WorkflowController {
      */
     @GetMapping("/{workflowId}")
     public Mono<ResponseEntity<WorkflowDefinition>> getWorkflow(@PathVariable String workflowId) {
-        return Mono.justOrEmpty(workflowEngine.getWorkflowDefinition(workflowId))
+        return Mono.justOrEmpty(workflowService.getWorkflowDefinition(workflowId))
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
     }
@@ -88,7 +90,7 @@ public class WorkflowController {
     public Mono<ResponseEntity<WorkflowStatusResponse>> startWorkflow(
             @PathVariable String workflowId,
             @Valid @RequestBody(required = false) StartWorkflowRequest request) {
-        
+
         if (request == null) {
             request = new StartWorkflowRequest();
         }
@@ -96,27 +98,15 @@ public class WorkflowController {
         log.info("Starting workflow via API: workflowId={}, correlationId={}",
                 workflowId, request.getCorrelationId());
 
-        StartWorkflowRequest finalRequest = request;
-        return workflowEngine.startWorkflow(
+        return workflowService.startWorkflow(
                 workflowId,
                 request.getInput(),
                 request.getCorrelationId(),
-                "api"
+                "api",
+                request.isWaitForCompletion(),
+                request.getWaitTimeoutMs()
         )
-        .flatMap(instance -> {
-            if (finalRequest.isWaitForCompletion()) {
-                return waitForCompletion(instance, finalRequest.getWaitTimeoutMs());
-            }
-            return Mono.just(instance);
-        })
-        .map(instance -> {
-            int totalSteps = workflowEngine.getWorkflowDefinition(workflowId)
-                    .map(def -> def.steps().size())
-                    .orElse(0);
-            return ResponseEntity
-                    .status(HttpStatus.CREATED)
-                    .body(WorkflowStatusResponse.from(instance, totalSteps));
-        })
+        .map(response -> ResponseEntity.status(HttpStatus.CREATED).body(response))
         .onErrorResume(WorkflowNotFoundException.class, e ->
                 Mono.just(ResponseEntity.notFound().build()));
     }
@@ -128,14 +118,9 @@ public class WorkflowController {
     public Mono<ResponseEntity<WorkflowStatusResponse>> getStatus(
             @PathVariable String workflowId,
             @PathVariable String instanceId) {
-        
-        return workflowEngine.getStatus(workflowId, instanceId)
-                .map(instance -> {
-                    int totalSteps = workflowEngine.getWorkflowDefinition(workflowId)
-                            .map(def -> def.steps().size())
-                            .orElse(0);
-                    return ResponseEntity.ok(WorkflowStatusResponse.from(instance, totalSteps));
-                })
+
+        return workflowService.getStatus(workflowId, instanceId)
+                .map(ResponseEntity::ok)
                 .onErrorResume(WorkflowNotFoundException.class, e ->
                         Mono.just(ResponseEntity.notFound().build()));
     }
@@ -147,32 +132,9 @@ public class WorkflowController {
     public Mono<ResponseEntity<Object>> collectResult(
             @PathVariable String workflowId,
             @PathVariable String instanceId) {
-        
-        return workflowEngine.getStatus(workflowId, instanceId)
-                .flatMap(instance -> {
-                    if (!instance.status().isTerminal()) {
-                        return Mono.just(ResponseEntity
-                                .status(HttpStatus.ACCEPTED)
-                                .body((Object) Map.of(
-                                        "status", instance.status(),
-                                        "message", "Workflow is still running"
-                                )));
-                    }
-                    
-                    if (instance.status() == WorkflowStatus.COMPLETED) {
-                        return Mono.just(ResponseEntity.ok((Object) Map.of(
-                                "status", "COMPLETED",
-                                "result", instance.output() != null ? instance.output() : Map.of()
-                        )));
-                    }
-                    
-                    return Mono.just(ResponseEntity
-                            .status(HttpStatus.INTERNAL_SERVER_ERROR)
-                            .body((Object) Map.of(
-                                    "status", instance.status(),
-                                    "error", instance.errorMessage() != null ? instance.errorMessage() : "Unknown error"
-                            )));
-                })
+
+        return workflowService.collectResult(workflowId, instanceId)
+                .map(this::mapResultToResponse)
                 .onErrorResume(WorkflowNotFoundException.class, e ->
                         Mono.just(ResponseEntity.notFound().build()));
     }
@@ -184,16 +146,11 @@ public class WorkflowController {
     public Mono<ResponseEntity<WorkflowStatusResponse>> cancelWorkflow(
             @PathVariable String workflowId,
             @PathVariable String instanceId) {
-        
+
         log.info("Cancelling workflow via API: workflowId={}, instanceId={}", workflowId, instanceId);
-        
-        return workflowEngine.cancelWorkflow(workflowId, instanceId)
-                .map(instance -> {
-                    int totalSteps = workflowEngine.getWorkflowDefinition(workflowId)
-                            .map(def -> def.steps().size())
-                            .orElse(0);
-                    return ResponseEntity.ok(WorkflowStatusResponse.from(instance, totalSteps));
-                })
+
+        return workflowService.cancelWorkflow(workflowId, instanceId)
+                .map(ResponseEntity::ok)
                 .onErrorResume(WorkflowNotFoundException.class, e ->
                         Mono.just(ResponseEntity.notFound().build()))
                 .onErrorResume(IllegalStateException.class, e ->
@@ -207,16 +164,11 @@ public class WorkflowController {
     public Mono<ResponseEntity<WorkflowStatusResponse>> retryWorkflow(
             @PathVariable String workflowId,
             @PathVariable String instanceId) {
-        
+
         log.info("Retrying workflow via API: workflowId={}, instanceId={}", workflowId, instanceId);
-        
-        return workflowEngine.retryWorkflow(workflowId, instanceId)
-                .map(instance -> {
-                    int totalSteps = workflowEngine.getWorkflowDefinition(workflowId)
-                            .map(def -> def.steps().size())
-                            .orElse(0);
-                    return ResponseEntity.ok(WorkflowStatusResponse.from(instance, totalSteps));
-                })
+
+        return workflowService.retryWorkflow(workflowId, instanceId)
+                .map(ResponseEntity::ok)
                 .onErrorResume(WorkflowNotFoundException.class, e ->
                         Mono.just(ResponseEntity.notFound().build()))
                 .onErrorResume(IllegalStateException.class, e ->
@@ -230,16 +182,10 @@ public class WorkflowController {
     public Flux<WorkflowStatusResponse> listInstances(
             @PathVariable String workflowId,
             @RequestParam(required = false) WorkflowStatus status) {
-        
-        Flux<WorkflowInstance> instances = status != null
-                ? workflowEngine.findInstances(workflowId, status)
-                : workflowEngine.findInstances(workflowId);
-        
-        int totalSteps = workflowEngine.getWorkflowDefinition(workflowId)
-                .map(def -> def.steps().size())
-                .orElse(0);
-        
-        return instances.map(instance -> WorkflowStatusResponse.from(instance, totalSteps));
+
+        return status != null
+                ? workflowService.findInstances(workflowId, status)
+                : workflowService.findInstances(workflowId);
     }
 
     // ==================== Step-Level Choreography Endpoints ====================
@@ -256,19 +202,14 @@ public class WorkflowController {
             @PathVariable String instanceId,
             @PathVariable String stepId,
             @RequestBody(required = false) TriggerStepRequest request) {
-        
+
         log.info("Triggering step via API: workflowId={}, instanceId={}, stepId={}",
                 workflowId, instanceId, stepId);
-        
+
         Map<String, Object> input = request != null ? request.getInput() : Map.of();
-        
-        return workflowEngine.triggerStep(workflowId, instanceId, stepId, input, "api")
-                .map(instance -> {
-                    int totalSteps = workflowEngine.getWorkflowDefinition(workflowId)
-                            .map(def -> def.steps().size())
-                            .orElse(0);
-                    return ResponseEntity.ok(WorkflowStatusResponse.from(instance, totalSteps));
-                })
+
+        return workflowService.triggerStep(workflowId, instanceId, stepId, input, "api")
+                .map(ResponseEntity::ok)
                 .onErrorResume(WorkflowNotFoundException.class, e ->
                         Mono.just(ResponseEntity.notFound().build()))
                 .onErrorResume(StepExecutionException.class, e ->
@@ -283,11 +224,13 @@ public class WorkflowController {
             @PathVariable String workflowId,
             @PathVariable String instanceId,
             @PathVariable String stepId) {
-        
-        return workflowEngine.getStepState(workflowId, instanceId, stepId)
-                .map(state -> ResponseEntity.ok(StepStateResponse.from(state)))
-                .onErrorResume(UnsupportedOperationException.class, e ->
-                        Mono.just(ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build()))
+
+        if (!workflowService.isStepStateTrackingEnabled()) {
+            return Mono.just(ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build());
+        }
+
+        return workflowService.getStepState(workflowId, instanceId, stepId)
+                .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
     }
 
@@ -298,10 +241,12 @@ public class WorkflowController {
     public Flux<StepStateResponse> getStepStates(
             @PathVariable String workflowId,
             @PathVariable String instanceId) {
-        
-        return workflowEngine.getStepStates(workflowId, instanceId)
-                .map(StepStateResponse::from)
-                .onErrorResume(UnsupportedOperationException.class, e -> Flux.empty());
+
+        if (!workflowService.isStepStateTrackingEnabled()) {
+            return Flux.empty();
+        }
+
+        return workflowService.getStepStates(workflowId, instanceId);
     }
 
     /**
@@ -316,50 +261,43 @@ public class WorkflowController {
     public Mono<ResponseEntity<WorkflowStateResponse>> getWorkflowState(
             @PathVariable String workflowId,
             @PathVariable String instanceId) {
-        
-        return workflowEngine.getWorkflowState(workflowId, instanceId)
-                .map(state -> ResponseEntity.ok(WorkflowStateResponse.from(state)))
-                .onErrorResume(UnsupportedOperationException.class, e ->
-                        Mono.just(ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build()))
+
+        if (!workflowService.isStepStateTrackingEnabled()) {
+            return Mono.just(ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build());
+        }
+
+        return workflowService.getWorkflowState(workflowId, instanceId)
+                .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Waits for workflow completion.
-     */
-    private Mono<WorkflowInstance> waitForCompletion(WorkflowInstance instance, long timeoutMs) {
-        if (instance.status().isTerminal()) {
-            return Mono.just(instance);
-        }
-        
-        return Mono.defer(() -> workflowEngine.getStatus(instance.instanceId()))
-                .repeatWhen(flux -> flux.delayElements(Duration.ofMillis(500)))
-                .filter(i -> i.status().isTerminal())
-                .next()
-                .timeout(Duration.ofMillis(timeoutMs))
-                .onErrorResume(e -> workflowEngine.getStatus(instance.instanceId()));
-    }
+    // ==================== Private Helper Methods ====================
 
     /**
-     * Summary DTO for workflow listing.
+     * Maps a WorkflowResult to an appropriate HTTP response.
      */
-    public record WorkflowSummary(
-            String workflowId,
-            String name,
-            String description,
-            String version,
-            String triggerMode,
-            int stepCount
-    ) {
-        public static WorkflowSummary from(WorkflowDefinition def) {
-            return new WorkflowSummary(
-                    def.workflowId(),
-                    def.name(),
-                    def.description(),
-                    def.version(),
-                    def.triggerMode().name(),
-                    def.steps().size()
-            );
+    private ResponseEntity<Object> mapResultToResponse(WorkflowResult result) {
+        if (!result.isTerminal()) {
+            return ResponseEntity
+                    .status(HttpStatus.ACCEPTED)
+                    .body(Map.of(
+                            "status", result.status(),
+                            "message", "Workflow is still running"
+                    ));
         }
+
+        if (result.isCompleted()) {
+            return ResponseEntity.ok(Map.of(
+                    "status", "COMPLETED",
+                    "result", result.output() != null ? result.output() : Map.of()
+            ));
+        }
+
+        return ResponseEntity
+                .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of(
+                        "status", result.status(),
+                        "error", result.errorMessage() != null ? result.errorMessage() : "Unknown error"
+                ));
     }
 }
