@@ -110,6 +110,18 @@ public record WorkflowDefinition(
     }
 
     /**
+     * Gets a step by its ID.
+     * <p>
+     * Alias for {@link #findStep(String)} for convenience.
+     *
+     * @param stepId the step ID
+     * @return optional containing the step if found
+     */
+    public Optional<WorkflowStepDefinition> getStep(String stepId) {
+        return findStep(stepId);
+    }
+
+    /**
      * Gets the next step after the given step ID.
      *
      * @param currentStepId the current step ID
