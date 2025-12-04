@@ -54,7 +54,13 @@ public enum WorkflowStatus {
     /**
      * Workflow instance has timed out.
      */
-    TIMED_OUT;
+    TIMED_OUT,
+
+    /**
+     * Workflow instance has been suspended by an operator.
+     * Can be resumed later to continue execution.
+     */
+    SUSPENDED;
 
     /**
      * Checks if the workflow is in a terminal state.
@@ -72,5 +78,23 @@ public enum WorkflowStatus {
      */
     public boolean isActive() {
         return this == PENDING || this == RUNNING || this == WAITING;
+    }
+
+    /**
+     * Checks if the workflow can be suspended.
+     *
+     * @return true if the workflow can be suspended
+     */
+    public boolean canSuspend() {
+        return this == RUNNING || this == WAITING || this == PENDING;
+    }
+
+    /**
+     * Checks if the workflow can be resumed.
+     *
+     * @return true if the workflow can be resumed
+     */
+    public boolean canResume() {
+        return this == SUSPENDED;
     }
 }

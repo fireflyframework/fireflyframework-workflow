@@ -210,6 +210,48 @@ public record WorkflowInstance(
     }
 
     /**
+     * Creates a copy with suspended status.
+     * Preserves the current step so execution can resume from the same point.
+     *
+     * @param reason the reason for suspension
+     * @return updated instance
+     */
+    public WorkflowInstance suspend(String reason) {
+        Map<String, Object> newContext = new HashMap<>(context);
+        newContext.put("_suspendedAt", Instant.now().toString());
+        newContext.put("_suspendReason", reason != null ? reason : "Manual suspension");
+        newContext.put("_statusBeforeSuspend", status.name());
+        return new WorkflowInstance(
+                instanceId, workflowId, workflowName, workflowVersion,
+                WorkflowStatus.SUSPENDED, currentStepId,
+                newContext, input, output, stepExecutions,
+                null, null, correlationId, triggeredBy,
+                createdAt, startedAt, null
+        );
+    }
+
+    /**
+     * Creates a copy that resumes from suspended status.
+     * Returns to RUNNING status to continue execution.
+     *
+     * @return updated instance
+     */
+    public WorkflowInstance resume() {
+        Map<String, Object> newContext = new HashMap<>(context);
+        newContext.put("_resumedAt", Instant.now().toString());
+        newContext.remove("_suspendedAt");
+        newContext.remove("_suspendReason");
+        newContext.remove("_statusBeforeSuspend");
+        return new WorkflowInstance(
+                instanceId, workflowId, workflowName, workflowVersion,
+                WorkflowStatus.RUNNING, currentStepId,
+                newContext, input, output, stepExecutions,
+                null, null, correlationId, triggeredBy,
+                createdAt, startedAt, null
+        );
+    }
+
+    /**
      * Creates a copy with updated current step.
      *
      * @param stepId the new current step ID

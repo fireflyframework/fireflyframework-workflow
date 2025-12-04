@@ -80,6 +80,20 @@ public class WorkflowEventPublisher {
     }
 
     /**
+     * Publishes a workflow suspended event.
+     */
+    public Mono<Void> publishWorkflowSuspended(WorkflowInstance instance, String reason) {
+        return publishEvent(WorkflowEvent.workflowSuspended(instance, reason));
+    }
+
+    /**
+     * Publishes a workflow resumed event.
+     */
+    public Mono<Void> publishWorkflowResumed(WorkflowInstance instance) {
+        return publishEvent(WorkflowEvent.workflowResumed(instance));
+    }
+
+    /**
      * Publishes a step started event.
      */
     public Mono<Void> publishStepStarted(WorkflowInstance instance, StepExecution step) {

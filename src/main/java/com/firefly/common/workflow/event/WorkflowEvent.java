@@ -246,6 +246,48 @@ public record WorkflowEvent(
     }
 
     /**
+     * Creates a workflow suspended event.
+     */
+    public static WorkflowEvent workflowSuspended(WorkflowInstance instance, String reason) {
+        return new WorkflowEvent(
+                WorkflowEventType.WORKFLOW_SUSPENDED,
+                instance.workflowId(),
+                instance.instanceId(),
+                instance.correlationId(),
+                instance.workflowName(),
+                instance.workflowVersion(),
+                instance.status(),
+                instance.currentStepId(),
+                null, null,
+                null, null,
+                instance.context(),
+                Instant.now(),
+                Map.of("suspendReason", reason != null ? reason : "Manual suspension")
+        );
+    }
+
+    /**
+     * Creates a workflow resumed event.
+     */
+    public static WorkflowEvent workflowResumed(WorkflowInstance instance) {
+        return new WorkflowEvent(
+                WorkflowEventType.WORKFLOW_RESUMED,
+                instance.workflowId(),
+                instance.instanceId(),
+                instance.correlationId(),
+                instance.workflowName(),
+                instance.workflowVersion(),
+                instance.status(),
+                instance.currentStepId(),
+                null, null,
+                null, null,
+                instance.context(),
+                Instant.now(),
+                Map.of()
+        );
+    }
+
+    /**
      * Gets the event type as a string for EDA publishing.
      */
     public String getEventTypeString() {
@@ -261,6 +303,8 @@ public record WorkflowEvent(
         WORKFLOW_FAILED,
         WORKFLOW_CANCELLED,
         WORKFLOW_TIMED_OUT,
+        WORKFLOW_SUSPENDED,
+        WORKFLOW_RESUMED,
         STEP_STARTED,
         STEP_COMPLETED,
         STEP_FAILED,
