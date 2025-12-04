@@ -26,7 +26,12 @@ import com.firefly.common.workflow.event.WorkflowEventListener;
 import com.firefly.common.workflow.event.WorkflowEventPublisher;
 import com.firefly.common.workflow.health.WorkflowEngineHealthIndicator;
 import com.firefly.common.workflow.properties.WorkflowProperties;
+import com.firefly.common.workflow.dlq.CacheDeadLetterStore;
+import com.firefly.common.workflow.dlq.DeadLetterService;
+import com.firefly.common.workflow.dlq.DeadLetterStore;
+import com.firefly.common.workflow.rest.DeadLetterController;
 import com.firefly.common.workflow.rest.WorkflowController;
+import com.firefly.common.workflow.scheduling.WorkflowScheduler;
 import com.firefly.common.workflow.service.WorkflowService;
 import com.firefly.common.workflow.metrics.WorkflowMetrics;
 import com.firefly.common.workflow.resilience.WorkflowResilience;
@@ -43,8 +48,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.ComponentScan;
-import org.springframework.context.annotation.Import;
+import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 /**
  * Auto-configuration for the Firefly Workflow Engine.
@@ -118,11 +123,12 @@ public class WorkflowEngineAutoConfiguration {
             WorkflowAspect workflowAspect,
             @Nullable WorkflowTracer workflowTracer,
             @Nullable WorkflowMetrics workflowMetrics,
-            @Nullable WorkflowResilience workflowResilience) {
-        log.info("Creating WorkflowExecutor with step-level choreography: {}, tracing: {}, metrics: {}, resilience: {}",
-                stepStateStore != null, workflowTracer != null, workflowMetrics != null, workflowResilience != null);
+            @Nullable WorkflowResilience workflowResilience,
+            @Nullable DeadLetterStore deadLetterStore) {
+        log.info("Creating WorkflowExecutor with step-level choreography: {}, tracing: {}, metrics: {}, resilience: {}, dlq: {}",
+                stepStateStore != null, workflowTracer != null, workflowMetrics != null, workflowResilience != null, deadLetterStore != null);
         return new WorkflowExecutor(stateStore, stepStateStore, eventPublisher, properties,
-                applicationContext, objectMapper, workflowAspect, workflowTracer, workflowMetrics, workflowResilience);
+                applicationContext, objectMapper, workflowAspect, workflowTracer, workflowMetrics, workflowResilience, deadLetterStore);
     }
 
     @Bean
@@ -192,5 +198,79 @@ public class WorkflowEngineAutoConfiguration {
             WorkflowStateStore stateStore) {
         log.info("Creating WorkflowEngineHealthIndicator");
         return new WorkflowEngineHealthIndicator(workflowEngine, stateStore);
+    }
+
+    /**
+     * Task scheduler for scheduled workflow execution.
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "workflowTaskScheduler")
+    @ConditionalOnProperty(prefix = "firefly.workflow.scheduling", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public TaskScheduler workflowTaskScheduler(WorkflowProperties properties) {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(properties.getScheduling().getPoolSize());
+        scheduler.setThreadNamePrefix(properties.getScheduling().getThreadNamePrefix());
+        scheduler.setWaitForTasksToCompleteOnShutdown(properties.getScheduling().isWaitForTasksToCompleteOnShutdown());
+        scheduler.setAwaitTerminationSeconds(properties.getScheduling().getAwaitTerminationSeconds());
+        scheduler.initialize();
+        log.info("Creating workflow TaskScheduler with pool size: {}", properties.getScheduling().getPoolSize());
+        return scheduler;
+    }
+
+    /**
+     * Workflow scheduler for cron-based workflow execution.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "firefly.workflow.scheduling", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public WorkflowScheduler workflowScheduler(
+            WorkflowEngine workflowEngine,
+            TaskScheduler workflowTaskScheduler,
+            org.springframework.context.ApplicationContext applicationContext,
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+            WorkflowProperties properties) {
+        log.info("Creating WorkflowScheduler for cron-based workflow execution");
+        return new WorkflowScheduler(workflowEngine, workflowTaskScheduler, applicationContext, objectMapper, properties);
+    }
+
+    // ==================== Dead Letter Queue (DLQ) Beans ====================
+
+    /**
+     * Dead Letter Store for persisting failed workflow/step entries.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(CacheAdapter.class)
+    @ConditionalOnProperty(prefix = "firefly.workflow.dlq", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public DeadLetterStore deadLetterStore(CacheAdapter cacheAdapter, WorkflowProperties properties) {
+        log.info("Creating CacheDeadLetterStore with retention: {}", properties.getDlq().getRetentionPeriod());
+        return new CacheDeadLetterStore(cacheAdapter, properties);
+    }
+
+    /**
+     * Dead Letter Service for DLQ operations.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(DeadLetterStore.class)
+    @ConditionalOnProperty(prefix = "firefly.workflow.dlq", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public DeadLetterService deadLetterService(
+            DeadLetterStore deadLetterStore,
+            WorkflowEngine workflowEngine,
+            WorkflowProperties properties) {
+        log.info("Creating DeadLetterService");
+        return new DeadLetterService(deadLetterStore, workflowEngine, properties);
+    }
+
+    /**
+     * Dead Letter Controller for DLQ REST API.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(DeadLetterService.class)
+    @ConditionalOnProperty(prefix = "firefly.workflow.api", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public DeadLetterController deadLetterController(DeadLetterService deadLetterService) {
+        log.info("Creating DeadLetterController REST API");
+        return new DeadLetterController(deadLetterService);
     }
 }

@@ -33,6 +33,7 @@ import java.time.Duration;
 import java.time.Instant;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -122,7 +123,7 @@ public class WorkflowEngine {
      * @return the created workflow instance
      */
     public Mono<WorkflowInstance> startWorkflow(String workflowId, Map<String, Object> input) {
-        return startWorkflow(workflowId, input, null, "api");
+        return startWorkflow(workflowId, input, null, "api", false);
     }
 
     /**
@@ -139,6 +140,25 @@ public class WorkflowEngine {
             Map<String, Object> input,
             String correlationId,
             String triggeredBy) {
+        return startWorkflow(workflowId, input, correlationId, triggeredBy, false);
+    }
+
+    /**
+     * Starts a new workflow instance with dry-run support.
+     *
+     * @param workflowId the workflow ID
+     * @param input the input data
+     * @param correlationId optional correlation ID
+     * @param triggeredBy identifier of the trigger source
+     * @param dryRun whether to run in dry-run mode (no side effects)
+     * @return the created workflow instance
+     */
+    public Mono<WorkflowInstance> startWorkflow(
+            String workflowId,
+            Map<String, Object> input,
+            String correlationId,
+            String triggeredBy,
+            boolean dryRun) {
 
         return Mono.defer(() -> {
             Instant workflowStartTime = Instant.now();
@@ -146,17 +166,22 @@ public class WorkflowEngine {
             WorkflowDefinition definition = registry.get(workflowId)
                     .orElseThrow(() -> new WorkflowNotFoundException(workflowId));
 
-            log.info("WORKFLOW_START: workflowId={}, correlationId={}, triggeredBy={}, stepCount={}",
-                    workflowId, correlationId, triggeredBy, definition.steps().size());
+            log.info("WORKFLOW_START: workflowId={}, correlationId={}, triggeredBy={}, stepCount={}, dryRun={}",
+                    workflowId, correlationId, triggeredBy, definition.steps().size(), dryRun);
 
             // Record workflow started metric
             if (workflowMetrics != null) {
                 workflowMetrics.recordWorkflowStarted(workflowId, triggeredBy);
             }
 
-            // Create instance
+            // Create instance with dryRun flag in context
+            Map<String, Object> inputWithDryRun = new HashMap<>(input != null ? input : Map.of());
+            if (dryRun) {
+                inputWithDryRun.put("_dryRun", true);
+            }
             WorkflowInstance instance = WorkflowInstance.create(
-                    definition, input, correlationId, triggeredBy);
+                    definition, inputWithDryRun, correlationId, triggeredBy)
+                    .withContext("_dryRun", dryRun);
 
             // Get first step
             Optional<WorkflowStepDefinition> firstStep = definition.getFirstStep();
@@ -287,6 +312,81 @@ public class WorkflowEngine {
                             .flatMap(saved -> eventPublisher.publishWorkflowCancelled(saved)
                                     .thenReturn(saved));
                 });
+    }
+
+    /**
+     * Suspends a running workflow instance.
+     * <p>
+     * A suspended workflow will not execute any further steps until resumed.
+     * This is useful during incidents or when downstream services are unavailable.
+     *
+     * @param workflowId the workflow ID
+     * @param instanceId the instance ID
+     * @param reason optional reason for suspension
+     * @return the suspended instance
+     */
+    public Mono<WorkflowInstance> suspendWorkflow(String workflowId, String instanceId, String reason) {
+        return getStatus(workflowId, instanceId)
+                .flatMap(instance -> {
+                    if (!instance.status().canSuspend()) {
+                        return Mono.error(new IllegalStateException(
+                                "Cannot suspend workflow in status: " + instance.status()));
+                    }
+                    
+                    log.info("WORKFLOW_SUSPEND: workflowId={}, instanceId={}, reason={}",
+                            workflowId, instanceId, reason);
+                    
+                    WorkflowInstance suspended = instance.suspend(reason);
+                    return stateStore.save(suspended)
+                            .flatMap(saved -> eventPublisher.publishWorkflowSuspended(saved, reason)
+                                    .thenReturn(saved));
+                });
+    }
+
+    /**
+     * Resumes a suspended workflow instance.
+     * <p>
+     * The workflow will continue execution from where it was suspended.
+     *
+     * @param workflowId the workflow ID
+     * @param instanceId the instance ID
+     * @return the resumed instance
+     */
+    public Mono<WorkflowInstance> resumeWorkflow(String workflowId, String instanceId) {
+        return getStatus(workflowId, instanceId)
+                .flatMap(instance -> {
+                    if (!instance.status().canResume()) {
+                        return Mono.error(new IllegalStateException(
+                                "Cannot resume workflow in status: " + instance.status()));
+                    }
+                    
+                    log.info("WORKFLOW_RESUME: workflowId={}, instanceId={}",
+                            workflowId, instanceId);
+                    
+                    WorkflowDefinition definition = registry.get(workflowId)
+                            .orElseThrow(() -> new WorkflowNotFoundException(workflowId));
+                    
+                    WorkflowInstance resumed = instance.resume();
+                    return stateStore.save(resumed)
+                            .flatMap(saved -> eventPublisher.publishWorkflowResumed(saved)
+                                    .thenReturn(saved))
+                            .flatMap(saved -> {
+                                // Continue workflow execution from current step
+                                if (saved.currentStepId() != null) {
+                                    return executor.executeWorkflow(definition, saved);
+                                }
+                                return Mono.just(saved);
+                            });
+                });
+    }
+
+    /**
+     * Finds all suspended workflow instances.
+     *
+     * @return flux of suspended instances
+     */
+    public Flux<WorkflowInstance> findSuspendedInstances() {
+        return stateStore.findByStatus(WorkflowStatus.SUSPENDED);
     }
 
     /**

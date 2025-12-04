@@ -21,6 +21,7 @@ import com.firefly.common.workflow.model.*;
 import com.firefly.common.workflow.rest.dto.StepStateResponse;
 import com.firefly.common.workflow.rest.dto.WorkflowStateResponse;
 import com.firefly.common.workflow.rest.dto.WorkflowStatusResponse;
+import com.firefly.common.workflow.rest.dto.WorkflowTopologyResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
@@ -74,6 +75,33 @@ public class WorkflowService {
     }
 
     /**
+     * Gets the workflow topology (DAG) for visualization.
+     *
+     * @param workflowId the workflow ID
+     * @return optional containing the topology response
+     */
+    public Optional<WorkflowTopologyResponse> getTopology(String workflowId) {
+        return workflowEngine.getWorkflowDefinition(workflowId)
+                .map(WorkflowTopologyResponse::from);
+    }
+
+    /**
+     * Gets the workflow topology with instance status information.
+     * <p>
+     * This is useful for visualizing the progress of a running workflow.
+     *
+     * @param workflowId the workflow ID
+     * @param instanceId the instance ID
+     * @return mono containing the topology response with status info
+     */
+    public Mono<WorkflowTopologyResponse> getTopology(String workflowId, String instanceId) {
+        return workflowEngine.getWorkflowDefinition(workflowId)
+                .map(definition -> workflowEngine.getStatus(workflowId, instanceId)
+                        .map(instance -> WorkflowTopologyResponse.from(definition, instance)))
+                .orElse(Mono.empty());
+    }
+
+    /**
      * Starts a new workflow instance.
      *
      * @param workflowId the workflow ID
@@ -113,11 +141,34 @@ public class WorkflowService {
             String triggeredBy,
             boolean waitForCompletion,
             long waitTimeoutMs) {
+        return startWorkflow(workflowId, input, correlationId, triggeredBy, waitForCompletion, waitTimeoutMs, false);
+    }
+
+    /**
+     * Starts a workflow with full options including dry-run mode.
+     *
+     * @param workflowId the workflow ID
+     * @param input input data for the workflow
+     * @param correlationId optional correlation ID
+     * @param triggeredBy source that triggered the workflow
+     * @param waitForCompletion whether to wait for completion
+     * @param waitTimeoutMs timeout in milliseconds when waiting
+     * @param dryRun whether to run in dry-run mode (no side effects)
+     * @return the workflow instance as a status response
+     */
+    public Mono<WorkflowStatusResponse> startWorkflow(
+            String workflowId,
+            Map<String, Object> input,
+            String correlationId,
+            String triggeredBy,
+            boolean waitForCompletion,
+            long waitTimeoutMs,
+            boolean dryRun) {
         
-        log.info("Starting workflow: workflowId={}, correlationId={}, waitForCompletion={}",
-                workflowId, correlationId, waitForCompletion);
+        log.info("Starting workflow: workflowId={}, correlationId={}, waitForCompletion={}, dryRun={}",
+                workflowId, correlationId, waitForCompletion, dryRun);
         
-        return workflowEngine.startWorkflow(workflowId, input, correlationId, triggeredBy)
+        return workflowEngine.startWorkflow(workflowId, input, correlationId, triggeredBy, dryRun)
                 .flatMap(instance -> {
                     if (waitForCompletion) {
                         return waitForCompletion(instance, waitTimeoutMs);
@@ -177,6 +228,45 @@ public class WorkflowService {
 
         return workflowEngine.retryWorkflow(workflowId, instanceId)
                 .map(instance -> toStatusResponse(workflowId, instance));
+    }
+
+    /**
+     * Suspends a running workflow instance.
+     *
+     * @param workflowId the workflow ID
+     * @param instanceId the instance ID
+     * @param reason optional reason for suspension
+     * @return the suspended workflow status response
+     */
+    public Mono<WorkflowStatusResponse> suspendWorkflow(String workflowId, String instanceId, String reason) {
+        log.info("Suspending workflow: workflowId={}, instanceId={}, reason={}", workflowId, instanceId, reason);
+
+        return workflowEngine.suspendWorkflow(workflowId, instanceId, reason)
+                .map(instance -> toStatusResponse(workflowId, instance));
+    }
+
+    /**
+     * Resumes a suspended workflow instance.
+     *
+     * @param workflowId the workflow ID
+     * @param instanceId the instance ID
+     * @return the resumed workflow status response
+     */
+    public Mono<WorkflowStatusResponse> resumeWorkflow(String workflowId, String instanceId) {
+        log.info("Resuming workflow: workflowId={}, instanceId={}", workflowId, instanceId);
+
+        return workflowEngine.resumeWorkflow(workflowId, instanceId)
+                .map(instance -> toStatusResponse(workflowId, instance));
+    }
+
+    /**
+     * Finds all suspended workflow instances.
+     *
+     * @return flux of suspended workflow status responses
+     */
+    public Flux<WorkflowStatusResponse> findSuspendedInstances() {
+        return workflowEngine.findSuspendedInstances()
+                .map(instance -> toStatusResponse(instance.workflowId(), instance));
     }
 
     /**

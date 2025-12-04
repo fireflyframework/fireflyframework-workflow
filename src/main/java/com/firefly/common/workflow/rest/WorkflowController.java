@@ -22,9 +22,11 @@ import com.firefly.common.workflow.model.WorkflowDefinition;
 import com.firefly.common.workflow.model.WorkflowStatus;
 import com.firefly.common.workflow.rest.dto.StartWorkflowRequest;
 import com.firefly.common.workflow.rest.dto.StepStateResponse;
+import com.firefly.common.workflow.rest.dto.SuspendWorkflowRequest;
 import com.firefly.common.workflow.rest.dto.TriggerStepRequest;
 import com.firefly.common.workflow.rest.dto.WorkflowStateResponse;
 import com.firefly.common.workflow.rest.dto.WorkflowStatusResponse;
+import com.firefly.common.workflow.rest.dto.WorkflowTopologyResponse;
 import com.firefly.common.workflow.service.WorkflowService;
 import com.firefly.common.workflow.service.WorkflowService.WorkflowResult;
 import com.firefly.common.workflow.service.WorkflowService.WorkflowSummary;
@@ -84,6 +86,35 @@ public class WorkflowController {
     }
 
     /**
+     * Gets the workflow topology (DAG) for visualization.
+     * <p>
+     * Returns the nodes (steps) and edges (dependencies) in a format
+     * compatible with frontend libraries like React Flow or Mermaid.js.
+     */
+    @GetMapping("/{workflowId}/topology")
+    public Mono<ResponseEntity<WorkflowTopologyResponse>> getTopology(@PathVariable String workflowId) {
+        return Mono.justOrEmpty(workflowService.getTopology(workflowId))
+                .map(ResponseEntity::ok)
+                .defaultIfEmpty(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Gets the workflow topology with instance status information.
+     * <p>
+     * Returns the topology with step execution statuses populated,
+     * useful for visualizing workflow progress.
+     */
+    @GetMapping("/{workflowId}/instances/{instanceId}/topology")
+    public Mono<ResponseEntity<WorkflowTopologyResponse>> getInstanceTopology(
+            @PathVariable String workflowId,
+            @PathVariable String instanceId) {
+
+        return workflowService.getTopology(workflowId, instanceId)
+                .map(ResponseEntity::ok)
+                .defaultIfEmpty(ResponseEntity.notFound().build());
+    }
+
+    /**
      * Starts a new workflow instance.
      */
     @PostMapping("/{workflowId}/start")
@@ -95,8 +126,8 @@ public class WorkflowController {
             request = new StartWorkflowRequest();
         }
 
-        log.info("Starting workflow via API: workflowId={}, correlationId={}",
-                workflowId, request.getCorrelationId());
+        log.info("Starting workflow via API: workflowId={}, correlationId={}, dryRun={}",
+                workflowId, request.getCorrelationId(), request.isDryRun());
 
         return workflowService.startWorkflow(
                 workflowId,
@@ -104,7 +135,8 @@ public class WorkflowController {
                 request.getCorrelationId(),
                 "api",
                 request.isWaitForCompletion(),
-                request.getWaitTimeoutMs()
+                request.getWaitTimeoutMs(),
+                request.isDryRun()
         )
         .map(response -> ResponseEntity.status(HttpStatus.CREATED).body(response))
         .onErrorResume(WorkflowNotFoundException.class, e ->
@@ -173,6 +205,58 @@ public class WorkflowController {
                         Mono.just(ResponseEntity.notFound().build()))
                 .onErrorResume(IllegalStateException.class, e ->
                         Mono.just(ResponseEntity.badRequest().build()));
+    }
+
+    /**
+     * Suspends a running workflow instance.
+     * <p>
+     * A suspended workflow will not execute any further steps until resumed.
+     * This is useful during incidents or when downstream services are unavailable.
+     */
+    @PostMapping("/{workflowId}/instances/{instanceId}/suspend")
+    public Mono<ResponseEntity<WorkflowStatusResponse>> suspendWorkflow(
+            @PathVariable String workflowId,
+            @PathVariable String instanceId,
+            @RequestBody(required = false) SuspendWorkflowRequest request) {
+
+        String reason = request != null ? request.getReason() : null;
+        log.info("Suspending workflow via API: workflowId={}, instanceId={}, reason={}",
+                workflowId, instanceId, reason);
+
+        return workflowService.suspendWorkflow(workflowId, instanceId, reason)
+                .map(ResponseEntity::ok)
+                .onErrorResume(WorkflowNotFoundException.class, e ->
+                        Mono.just(ResponseEntity.notFound().build()))
+                .onErrorResume(IllegalStateException.class, e ->
+                        Mono.just(ResponseEntity.badRequest().build()));
+    }
+
+    /**
+     * Resumes a suspended workflow instance.
+     * <p>
+     * The workflow will continue execution from where it was suspended.
+     */
+    @PostMapping("/{workflowId}/instances/{instanceId}/resume")
+    public Mono<ResponseEntity<WorkflowStatusResponse>> resumeWorkflow(
+            @PathVariable String workflowId,
+            @PathVariable String instanceId) {
+
+        log.info("Resuming workflow via API: workflowId={}, instanceId={}", workflowId, instanceId);
+
+        return workflowService.resumeWorkflow(workflowId, instanceId)
+                .map(ResponseEntity::ok)
+                .onErrorResume(WorkflowNotFoundException.class, e ->
+                        Mono.just(ResponseEntity.notFound().build()))
+                .onErrorResume(IllegalStateException.class, e ->
+                        Mono.just(ResponseEntity.badRequest().build()));
+    }
+
+    /**
+     * Lists all suspended workflow instances.
+     */
+    @GetMapping("/suspended")
+    public Flux<WorkflowStatusResponse> listSuspendedInstances() {
+        return workflowService.findSuspendedInstances();
     }
 
     /**

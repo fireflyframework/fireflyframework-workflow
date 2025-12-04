@@ -97,6 +97,20 @@ public class WorkflowProperties {
     private ResilienceConfig resilience = new ResilienceConfig();
 
     /**
+     * Scheduling configuration for cron-based workflows.
+     */
+    @Valid
+    @NotNull
+    private SchedulingConfig scheduling = new SchedulingConfig();
+
+    /**
+     * Dead Letter Queue (DLQ) configuration.
+     */
+    @Valid
+    @NotNull
+    private DlqConfig dlq = new DlqConfig();
+
+    /**
      * State persistence configuration.
      */
     @Data
@@ -419,5 +433,73 @@ public class WorkflowProperties {
          * Whether to cancel the running future on timeout.
          */
         private boolean cancelRunningFuture = true;
+    }
+
+    /**
+     * Scheduling configuration for cron-based workflow execution.
+     */
+    @Data
+    public static class SchedulingConfig {
+
+        /**
+         * Whether workflow scheduling is enabled.
+         */
+        private boolean enabled = true;
+
+        /**
+         * Thread pool size for scheduled tasks.
+         */
+        @Min(1)
+        private int poolSize = 5;
+
+        /**
+         * Thread name prefix for scheduled tasks.
+         */
+        private String threadNamePrefix = "workflow-scheduler-";
+
+        /**
+         * Whether to wait for scheduled tasks to complete on shutdown.
+         */
+        private boolean waitForTasksToCompleteOnShutdown = true;
+
+        /**
+         * Timeout in seconds to wait for tasks on shutdown.
+         */
+        @Min(0)
+        private int awaitTerminationSeconds = 30;
+    }
+
+    /**
+     * Dead Letter Queue (DLQ) configuration.
+     */
+    @Data
+    public static class DlqConfig {
+
+        /**
+         * Whether DLQ is enabled.
+         */
+        private boolean enabled = true;
+
+        /**
+         * Maximum number of replay attempts before giving up.
+         */
+        @Min(1)
+        private int maxReplayAttempts = 3;
+
+        /**
+         * Retention period for DLQ entries.
+         */
+        @NotNull
+        private Duration retentionPeriod = Duration.ofDays(30);
+
+        /**
+         * Whether to automatically save failed workflows to DLQ.
+         */
+        private boolean autoSaveOnFailure = true;
+
+        /**
+         * Whether to include full stack traces in DLQ entries.
+         */
+        private boolean includeStackTrace = true;
     }
 }

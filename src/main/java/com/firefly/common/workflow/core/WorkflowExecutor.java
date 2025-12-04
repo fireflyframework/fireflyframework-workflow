@@ -18,6 +18,8 @@ package com.firefly.common.workflow.core;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.firefly.common.workflow.aspect.WorkflowAspect;
+import com.firefly.common.workflow.dlq.DeadLetterEntry;
+import com.firefly.common.workflow.dlq.DeadLetterStore;
 import com.firefly.common.workflow.event.WorkflowEventPublisher;
 import com.firefly.common.workflow.exception.StepExecutionException;
 import com.firefly.common.workflow.exception.WorkflowException;
@@ -70,6 +72,7 @@ public class WorkflowExecutor {
     private final WorkflowTracer workflowTracer;
     private final WorkflowMetrics workflowMetrics;
     private final WorkflowResilience workflowResilience;
+    private final DeadLetterStore deadLetterStore;
 
     private final ExpressionParser spelParser = new SpelExpressionParser();
     private final Map<String, WorkflowTopology> topologyCache = new ConcurrentHashMap<>();
@@ -84,7 +87,8 @@ public class WorkflowExecutor {
             WorkflowAspect workflowAspect,
             @Nullable WorkflowTracer workflowTracer,
             @Nullable WorkflowMetrics workflowMetrics,
-            @Nullable WorkflowResilience workflowResilience) {
+            @Nullable WorkflowResilience workflowResilience,
+            @Nullable DeadLetterStore deadLetterStore) {
         this.stateStore = stateStore;
         this.stepStateStore = stepStateStore;
         this.eventPublisher = eventPublisher;
@@ -95,6 +99,7 @@ public class WorkflowExecutor {
         this.workflowTracer = workflowTracer;
         this.workflowMetrics = workflowMetrics;
         this.workflowResilience = workflowResilience;
+        this.deadLetterStore = deadLetterStore;
     }
 
     /**
@@ -164,6 +169,12 @@ public class WorkflowExecutor {
             return Mono.just(instance);
         }
 
+        if (instance.status() == WorkflowStatus.SUSPENDED) {
+            log.info("Workflow {} is suspended, halting execution at layer {}",
+                    instance.instanceId(), layerIndex);
+            return Mono.just(instance);
+        }
+
         List<WorkflowStepDefinition> currentLayer = layers.get(layerIndex);
         log.debug("Executing layer {} with {} steps for workflow {}",
                 layerIndex, currentLayer.size(), definition.workflowId());
@@ -227,7 +238,8 @@ public class WorkflowExecutor {
             return Mono.just(instance);
         }
 
-        if (instance.status().isTerminal() || instance.status() == WorkflowStatus.WAITING) {
+        if (instance.status().isTerminal() || instance.status() == WorkflowStatus.WAITING
+                || instance.status() == WorkflowStatus.SUSPENDED) {
             return Mono.just(instance);
         }
 
@@ -450,8 +462,9 @@ public class WorkflowExecutor {
         }
 
         // Create context for condition evaluation
+        boolean dryRun = isDryRun(instance);
         WorkflowContext preContext = new WorkflowContext(
-                definition, instance, stepId, objectMapper);
+                definition, instance, stepId, objectMapper, dryRun);
 
         // Evaluate condition if present
         if (stepDef.condition() != null && !stepDef.condition().isEmpty()) {
@@ -489,9 +502,9 @@ public class WorkflowExecutor {
                 .then(saveAndPublish(runningInstance, () ->
                         eventPublisher.publishStepStarted(runningInstance, execution.start())))
                 .flatMap(saved -> {
-                    // Create context
+                    // Create context with dryRun flag
                     WorkflowContext context = new WorkflowContext(
-                            definition, saved, stepId, objectMapper);
+                            definition, saved, stepId, objectMapper, dryRun);
 
                     // Get step handler
                     return getStepHandler(definition.workflowId(), stepDef)
@@ -890,7 +903,30 @@ public class WorkflowExecutor {
         // Fail the workflow
         WorkflowInstance finalFailed = failedInstance.fail(error);
         
+        // Save to DLQ if enabled
+        Mono<Void> saveToDlq = Mono.empty();
+        if (deadLetterStore != null && properties.getDlq().isAutoSaveOnFailure()) {
+            DeadLetterEntry dlqEntry = DeadLetterEntry.forStep(
+                    definition.workflowId(),
+                    instance.instanceId(),
+                    stepDef.stepId(),
+                    stepDef.name(),
+                    getStepInput(instance, stepDef),
+                    error,
+                    failed.attemptNumber(),
+                    instance.correlationId(),
+                    triggeredBy
+            );
+            saveToDlq = deadLetterStore.save(dlqEntry)
+                    .doOnSuccess(saved -> log.info("Saved failed step to DLQ: dlqId={}, workflowId={}, stepId={}",
+                            saved.id(), definition.workflowId(), stepDef.stepId()))
+                    .doOnError(e -> log.warn("Failed to save to DLQ: {}", e.getMessage()))
+                    .onErrorResume(e -> Mono.empty())
+                    .then();
+        }
+        
         return updateStepState
+                .then(saveToDlq)
                 .then(saveStepAndWorkflowState(definition, finalFailed, stepDef, failed, triggeredBy, false))
                 .then(saveAndPublish(finalFailed, () -> {
                     eventPublisher.publishStepFailed(failedInstance, failed).subscribe();
@@ -960,5 +996,19 @@ public class WorkflowExecutor {
                 .filter(e -> e.status() == StepStatus.COMPLETED)
                 .map(StepExecution::output)
                 .orElse(null);
+    }
+
+    /**
+     * Checks if the workflow instance is running in dry-run mode.
+     *
+     * @param instance the workflow instance
+     * @return true if dry-run mode is enabled
+     */
+    private boolean isDryRun(WorkflowInstance instance) {
+        Object dryRunFlag = instance.context().get("_dryRun");
+        if (dryRunFlag instanceof Boolean) {
+            return (Boolean) dryRunFlag;
+        }
+        return false;
     }
 }
