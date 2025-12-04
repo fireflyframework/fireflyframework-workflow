@@ -16,14 +16,31 @@
 
 package com.firefly.common.workflow.annotation;
 
+import com.firefly.common.workflow.model.StepTriggerMode;
+
 import java.lang.annotation.*;
 
 /**
  * Marks a method as a workflow step.
  * <p>
  * Methods annotated with @WorkflowStep define individual steps within a workflow.
- * They are executed in order based on the order attribute and receive the
- * WorkflowContext as their first parameter.
+ * Steps can be executed based on explicit dependencies (via {@link #dependsOn()}) or
+ * by order (via {@link #order()}) for backward compatibility.
+ * <p>
+ * <b>Execution Order:</b>
+ * <ul>
+ *   <li>If {@link #dependsOn()} is specified, the step waits for all dependencies to complete</li>
+ *   <li>Steps with no dependencies and no order are executed first (root steps)</li>
+ *   <li>If only {@link #order()} is specified, steps execute sequentially by order value</li>
+ *   <li>Steps with the same order or no dependencies can execute in parallel if marked async</li>
+ * </ul>
+ * <p>
+ * <b>Invocation Patterns:</b>
+ * <ul>
+ *   <li>{@link StepTriggerMode#EVENT} - Step is triggered by events (primary pattern)</li>
+ *   <li>{@link StepTriggerMode#PROGRAMMATIC} - Step is invoked programmatically</li>
+ *   <li>{@link StepTriggerMode#BOTH} - Step supports both invocation patterns</li>
+ * </ul>
  * <p>
  * Step methods should return:
  * <ul>
@@ -32,18 +49,31 @@ import java.lang.annotation.*;
  *   <li>void/Mono&lt;Void&gt; for steps without output</li>
  * </ul>
  * <p>
- * Example usage:
+ * Example usage with dependencies (recommended for event-driven choreography):
  * <pre>
  * {@code
  * @WorkflowStep(
  *     id = "validate-order",
  *     name = "Validate Order",
- *     order = 1,
+ *     triggerMode = StepTriggerMode.EVENT,
+ *     inputEventType = "order.created",
  *     outputEventType = "order.validated"
  * )
  * public Mono<ValidationResult> validateOrder(WorkflowContext ctx) {
  *     Order order = ctx.getInput("order", Order.class);
  *     return validationService.validate(order);
+ * }
+ *
+ * @WorkflowStep(
+ *     id = "process-payment",
+ *     name = "Process Payment",
+ *     dependsOn = {"validate-order"},
+ *     triggerMode = StepTriggerMode.EVENT,
+ *     inputEventType = "order.validated",
+ *     outputEventType = "payment.processed"
+ * )
+ * public Mono<PaymentResult> processPayment(WorkflowContext ctx) {
+ *     return paymentService.process(ctx.getStepOutput("validate-order", ValidationResult.class));
  * }
  * }
  * </pre>
@@ -79,18 +109,58 @@ public @interface WorkflowStep {
     String description() default "";
 
     /**
+     * IDs of steps that must complete before this step can execute.
+     * <p>
+     * This enables explicit dependency-based execution order, which is the
+     * recommended approach for event-driven choreography. When dependencies
+     * are specified, the step will only execute after all dependent steps
+     * have completed successfully.
+     * <p>
+     * Example:
+     * <pre>
+     * {@code
+     * @WorkflowStep(id = "ship", dependsOn = {"validate", "payment"})
+     * public Mono<ShipmentResult> shipOrder(WorkflowContext ctx) { ... }
+     * }
+     * </pre>
+     *
+     * @return array of step IDs this step depends on
+     */
+    String[] dependsOn() default {};
+
+    /**
      * Execution order of this step within the workflow.
      * <p>
-     * Steps with lower order values execute first.
+     * Steps with lower order values execute first. This is provided for
+     * backward compatibility; prefer using {@link #dependsOn()} for explicit
+     * dependency management in event-driven workflows.
+     * <p>
+     * When both {@code order} and {@code dependsOn} are specified, dependencies
+     * take precedence - the step will wait for dependencies regardless of order.
      *
      * @return the execution order
      */
     int order() default 0;
 
     /**
+     * How this step can be triggered.
+     * <p>
+     * Defines the invocation pattern for this step:
+     * <ul>
+     *   <li>{@link StepTriggerMode#EVENT} - Triggered by events (recommended for choreography)</li>
+     *   <li>{@link StepTriggerMode#PROGRAMMATIC} - Invoked programmatically via API</li>
+     *   <li>{@link StepTriggerMode#BOTH} - Supports both patterns (default)</li>
+     * </ul>
+     *
+     * @return the trigger mode
+     */
+    StepTriggerMode triggerMode() default StepTriggerMode.BOTH;
+
+    /**
      * Event type that can trigger this specific step (for event-driven steps).
      * <p>
      * If specified, this step can be triggered independently via events.
+     * This is the primary mechanism for event-driven choreography.
      *
      * @return the input event type
      */
@@ -98,6 +168,9 @@ public @interface WorkflowStep {
 
     /**
      * Event type to publish when this step completes successfully.
+     * <p>
+     * This enables downstream steps or external systems to react to
+     * step completion, forming the basis of event-driven choreography.
      *
      * @return the output event type
      */
@@ -143,7 +216,8 @@ public @interface WorkflowStep {
     /**
      * Whether this step should execute asynchronously.
      * <p>
-     * Async steps don't block the workflow and allow parallel execution.
+     * Async steps don't block the workflow and allow parallel execution
+     * with other async steps at the same dependency level.
      *
      * @return true for async execution
      */
