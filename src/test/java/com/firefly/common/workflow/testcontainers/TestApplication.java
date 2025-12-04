@@ -16,26 +16,28 @@
 
 package com.firefly.common.workflow.testcontainers;
 
-import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.annotation.ComponentScan;
+import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration;
+import org.springframework.boot.autoconfigure.data.redis.RedisReactiveAutoConfiguration;
+import org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration;
 
 /**
- * Test application for Testcontainers integration tests.
+ * Minimal test application for Testcontainers integration tests.
  * <p>
- * This application enables auto-configuration for lib-common-eda and lib-common-cache
- * to test the workflow engine with real Kafka and Redis instances.
+ * This is a minimal Spring Boot application that excludes auto-configurations
+ * that conflict with lib-common-cache and lib-common-eda.
+ * <p>
+ * Individual test classes should use @Import to bring in only the
+ * auto-configurations they need.
  */
-@SpringBootApplication
-@ComponentScan(basePackages = {
-        "com.firefly.common.workflow",
-        "com.firefly.common.eda",
-        "com.firefly.common.cache"
-})
+@SpringBootApplication(
+        scanBasePackages = "com.firefly.common.workflow.testcontainers",
+        exclude = {
+                RedisAutoConfiguration.class,
+                RedisReactiveAutoConfiguration.class,
+                KafkaAutoConfiguration.class
+        }
+)
 public class TestApplication {
-
-    public static void main(String[] args) {
-        SpringApplication.run(TestApplication.class, args);
-    }
 }
 

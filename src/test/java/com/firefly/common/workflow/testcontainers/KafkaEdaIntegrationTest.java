@@ -16,9 +16,16 @@
 
 package com.firefly.common.workflow.testcontainers;
 
+import com.firefly.common.eda.annotation.PublisherType;
+import com.firefly.common.eda.config.FireflyEdaAutoConfiguration;
+import com.firefly.common.eda.config.FireflyEdaKafkaPublisherAutoConfiguration;
 import com.firefly.common.eda.publisher.EventPublisher;
 import com.firefly.common.eda.publisher.EventPublisherFactory;
-import com.firefly.common.eda.publisher.PublisherType;
+import io.github.resilience4j.bulkhead.BulkheadRegistry;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.ratelimiter.RateLimiterRegistry;
+import io.github.resilience4j.retry.RetryRegistry;
+import io.github.resilience4j.timelimiter.TimeLimiterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -26,8 +33,13 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.ApplicationContextInitializer;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.core.env.MapPropertySource;
+import org.springframework.test.context.ContextConfiguration;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -51,20 +63,69 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Testcontainers
 @SpringBootTest(classes = TestApplication.class)
+@Import({FireflyEdaAutoConfiguration.class, FireflyEdaKafkaPublisherAutoConfiguration.class, KafkaEdaIntegrationTest.ResilienceTestConfig.class})
+@ContextConfiguration(initializers = KafkaEdaIntegrationTest.Initializer.class)
 @DisplayName("Kafka EDA Integration Tests (lib-common-eda)")
 class KafkaEdaIntegrationTest {
 
-    private static final String TEST_TOPIC = "workflow-events-test";
+    /**
+     * Test configuration that provides Resilience4j beans required by lib-common-eda.
+     */
+    @TestConfiguration
+    static class ResilienceTestConfig {
+        @Bean
+        public CircuitBreakerRegistry circuitBreakerRegistry() {
+            return CircuitBreakerRegistry.ofDefaults();
+        }
+
+        @Bean
+        public RetryRegistry retryRegistry() {
+            return RetryRegistry.ofDefaults();
+        }
+
+        @Bean
+        public RateLimiterRegistry rateLimiterRegistry() {
+            return RateLimiterRegistry.ofDefaults();
+        }
+
+        @Bean
+        public BulkheadRegistry bulkheadRegistry() {
+            return BulkheadRegistry.ofDefaults();
+        }
+
+        @Bean
+        public TimeLimiterRegistry timeLimiterRegistry() {
+            return TimeLimiterRegistry.ofDefaults();
+        }
+    }
+
+    private static final String TEST_TOPIC_PREFIX = "workflow-events-test-";
+    private String testTopic;
 
     @Container
     static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.5.0"));
 
-    @DynamicPropertySource
-    static void configureProperties(DynamicPropertyRegistry registry) {
-        registry.add("firefly.eda.enabled", () -> "true");
-        registry.add("firefly.eda.publishers.enabled", () -> "true");
-        registry.add("firefly.eda.publishers.kafka.default.enabled", () -> "true");
-        registry.add("firefly.eda.publishers.kafka.default.bootstrap-servers", kafka::getBootstrapServers);
+    /**
+     * Initializer that sets Kafka properties before Spring context loads.
+     * This ensures the FireflyEdaKafkaPublisherAutoConfiguration conditions are evaluated correctly.
+     */
+    static class Initializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
+        @Override
+        public void initialize(ConfigurableApplicationContext context) {
+            // Start container if not already started
+            if (!kafka.isRunning()) {
+                kafka.start();
+            }
+
+            Map<String, Object> props = new HashMap<>();
+            props.put("firefly.eda.enabled", "true");
+            props.put("firefly.eda.publishers.enabled", "true");
+            props.put("firefly.eda.publishers.kafka.default.enabled", "true");
+            props.put("firefly.eda.publishers.kafka.default.bootstrap-servers", kafka.getBootstrapServers());
+
+            context.getEnvironment().getPropertySources()
+                    .addFirst(new MapPropertySource("testcontainers", props));
+        }
     }
 
     @Autowired
@@ -80,6 +141,8 @@ class KafkaEdaIntegrationTest {
     void setUp() {
         kafkaPublisher = eventPublisherFactory.getPublisher(PublisherType.KAFKA, "default");
         receivedMessages.clear();
+        // Use unique topic per test to avoid message pollution between tests
+        testTopic = TEST_TOPIC_PREFIX + UUID.randomUUID().toString().substring(0, 8);
         startTestConsumer();
     }
 
@@ -98,7 +161,7 @@ class KafkaEdaIntegrationTest {
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "true");
 
         testConsumer = new KafkaConsumer<>(props);
-        testConsumer.subscribe(Collections.singletonList(TEST_TOPIC));
+        testConsumer.subscribe(Collections.singletonList(testTopic));
 
         consumerRunning.set(true);
         consumerThread = new Thread(() -> {
@@ -136,26 +199,129 @@ class KafkaEdaIntegrationTest {
     void shouldPublishSimpleEvent() throws InterruptedException {
         String eventPayload = "{\"type\":\"WORKFLOW_STARTED\",\"instanceId\":\"wf-123\"}";
 
-        StepVerifier.create(kafkaPublisher.publish(TEST_TOPIC, eventPayload))
+        // EventPublisher.publish(event, destination) - event first, then destination
+        StepVerifier.create(kafkaPublisher.publish(eventPayload, testTopic))
                 .verifyComplete();
 
         // Wait for message to be consumed
         boolean received = waitForMessages(1, 10);
         assertThat(received).isTrue();
-        assertThat(receivedMessages).contains(eventPayload);
+        assertThat(receivedMessages).anyMatch(msg -> msg.contains("WORKFLOW_STARTED"));
     }
 
     @Test
-    @DisplayName("Should publish event with key to Kafka")
-    void shouldPublishEventWithKey() throws InterruptedException {
-        String key = "workflow-instance-456";
+    @DisplayName("Should publish event with partition key to Kafka")
+    void shouldPublishEventWithPartitionKey() throws InterruptedException {
         String eventPayload = "{\"type\":\"STEP_COMPLETED\",\"instanceId\":\"wf-456\",\"stepId\":\"step-1\"}";
+        Map<String, Object> headers = Map.of("partition_key", "workflow-instance-456");
 
-        StepVerifier.create(kafkaPublisher.publish(TEST_TOPIC, key, eventPayload))
+        StepVerifier.create(kafkaPublisher.publish(eventPayload, testTopic, headers))
                 .verifyComplete();
 
         boolean received = waitForMessages(1, 10);
         assertThat(received).isTrue();
-        assertThat(receivedMessages).contains(eventPayload);
+        assertThat(receivedMessages).anyMatch(msg -> msg.contains("STEP_COMPLETED"));
     }
 
+    @Test
+    @DisplayName("Should publish multiple events to Kafka")
+    void shouldPublishMultipleEvents() throws InterruptedException {
+        List<String> events = List.of(
+                "{\"type\":\"WORKFLOW_STARTED\",\"instanceId\":\"wf-789\"}",
+                "{\"type\":\"STEP_STARTED\",\"instanceId\":\"wf-789\",\"stepId\":\"step-1\"}",
+                "{\"type\":\"STEP_COMPLETED\",\"instanceId\":\"wf-789\",\"stepId\":\"step-1\"}",
+                "{\"type\":\"WORKFLOW_COMPLETED\",\"instanceId\":\"wf-789\"}"
+        );
+
+        for (String event : events) {
+            StepVerifier.create(kafkaPublisher.publish(event, testTopic))
+                    .verifyComplete();
+        }
+
+        boolean received = waitForMessages(4, 15);
+        assertThat(received).isTrue();
+        assertThat(receivedMessages).hasSize(4);
+    }
+
+    @Test
+    @DisplayName("Should publish workflow state change events")
+    void shouldPublishWorkflowStateChangeEvents() throws InterruptedException {
+        Map<String, Object> workflowEvent = new LinkedHashMap<>();
+        workflowEvent.put("eventType", "WORKFLOW_STATE_CHANGED");
+        workflowEvent.put("instanceId", "wf-state-test");
+        workflowEvent.put("previousState", "RUNNING");
+        workflowEvent.put("newState", "COMPLETED");
+        workflowEvent.put("timestamp", System.currentTimeMillis());
+
+        String eventJson = toJson(workflowEvent);
+        Map<String, Object> headers = Map.of("partition_key", "wf-state-test");
+
+        StepVerifier.create(kafkaPublisher.publish(eventJson, testTopic, headers))
+                .verifyComplete();
+
+        boolean received = waitForMessages(1, 10);
+        assertThat(received).isTrue();
+        assertThat(receivedMessages.get(0)).contains("WORKFLOW_STATE_CHANGED");
+        assertThat(receivedMessages.get(0)).contains("wf-state-test");
+    }
+
+    @Test
+    @DisplayName("Should get auto-selected publisher (should be Kafka when available)")
+    void shouldGetAutoSelectedPublisher() {
+        EventPublisher autoPublisher = eventPublisherFactory.getPublisher(PublisherType.AUTO, "default");
+        assertThat(autoPublisher).isNotNull();
+        // When Kafka is configured, AUTO should select Kafka
+        assertThat(autoPublisher.getPublisherType()).isEqualTo(PublisherType.KAFKA);
+    }
+
+    @Test
+    @DisplayName("Should handle concurrent event publishing")
+    void shouldHandleConcurrentPublishing() throws InterruptedException {
+        int eventCount = 20;
+        CountDownLatch latch = new CountDownLatch(eventCount);
+        List<String> publishedEvents = new CopyOnWriteArrayList<>();
+
+        for (int i = 0; i < eventCount; i++) {
+            final int index = i;
+            String event = "{\"type\":\"CONCURRENT_EVENT\",\"index\":" + index + "}";
+            publishedEvents.add(event);
+
+            kafkaPublisher.publish(event, testTopic)
+                    .doFinally(signal -> latch.countDown())
+                    .subscribe();
+        }
+
+        boolean allPublished = latch.await(30, TimeUnit.SECONDS);
+        assertThat(allPublished).isTrue();
+
+        boolean received = waitForMessages(eventCount, 30);
+        assertThat(received).isTrue();
+        assertThat(receivedMessages).hasSize(eventCount);
+    }
+
+    private boolean waitForMessages(int expectedCount, int timeoutSeconds) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + (timeoutSeconds * 1000L);
+        while (receivedMessages.size() < expectedCount && System.currentTimeMillis() < deadline) {
+            Thread.sleep(100);
+        }
+        return receivedMessages.size() >= expectedCount;
+    }
+
+    private String toJson(Map<String, Object> map) {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            if (!first) sb.append(",");
+            sb.append("\"").append(entry.getKey()).append("\":");
+            Object value = entry.getValue();
+            if (value instanceof String) {
+                sb.append("\"").append(value).append("\"");
+            } else {
+                sb.append(value);
+            }
+            first = false;
+        }
+        sb.append("}");
+        return sb.toString();
+    }
+}

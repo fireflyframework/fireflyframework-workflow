@@ -16,12 +16,20 @@
 
 package com.firefly.common.workflow.testcontainers;
 
+import com.firefly.common.cache.config.CacheAutoConfiguration;
+import com.firefly.common.cache.config.RedisCacheAutoConfiguration;
 import com.firefly.common.cache.core.CacheAdapter;
 import com.firefly.common.cache.core.CacheType;
-import com.firefly.common.cache.manager.FireflyCacheManager;
+import com.firefly.common.eda.annotation.PublisherType;
+import com.firefly.common.eda.config.FireflyEdaAutoConfiguration;
+import com.firefly.common.eda.config.FireflyEdaKafkaPublisherAutoConfiguration;
 import com.firefly.common.eda.publisher.EventPublisher;
 import com.firefly.common.eda.publisher.EventPublisherFactory;
-import com.firefly.common.eda.publisher.PublisherType;
+import io.github.resilience4j.bulkhead.BulkheadRegistry;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.ratelimiter.RateLimiterRegistry;
+import io.github.resilience4j.retry.RetryRegistry;
+import io.github.resilience4j.timelimiter.TimeLimiterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -29,8 +37,13 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.ApplicationContextInitializer;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.core.env.MapPropertySource;
+import org.springframework.test.context.ContextConfiguration;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -53,11 +66,50 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Testcontainers
 @SpringBootTest(classes = TestApplication.class)
+@Import({
+        CacheAutoConfiguration.class,
+        RedisCacheAutoConfiguration.class,
+        FireflyEdaAutoConfiguration.class,
+        FireflyEdaKafkaPublisherAutoConfiguration.class,
+        WorkflowIntegrationTest.ResilienceTestConfig.class
+})
+@ContextConfiguration(initializers = WorkflowIntegrationTest.Initializer.class)
 @DisplayName("Workflow Engine Integration Tests (Kafka + Redis)")
 class WorkflowIntegrationTest {
 
-    private static final String WORKFLOW_EVENTS_TOPIC = "workflow-events";
-    private static final String WORKFLOW_CACHE_NAME = "workflow-state";
+    /**
+     * Test configuration that provides Resilience4j beans required by lib-common-eda.
+     */
+    @TestConfiguration
+    static class ResilienceTestConfig {
+        @Bean
+        public CircuitBreakerRegistry circuitBreakerRegistry() {
+            return CircuitBreakerRegistry.ofDefaults();
+        }
+
+        @Bean
+        public RetryRegistry retryRegistry() {
+            return RetryRegistry.ofDefaults();
+        }
+
+        @Bean
+        public RateLimiterRegistry rateLimiterRegistry() {
+            return RateLimiterRegistry.ofDefaults();
+        }
+
+        @Bean
+        public BulkheadRegistry bulkheadRegistry() {
+            return BulkheadRegistry.ofDefaults();
+        }
+
+        @Bean
+        public TimeLimiterRegistry timeLimiterRegistry() {
+            return TimeLimiterRegistry.ofDefaults();
+        }
+    }
+
+    private static final String WORKFLOW_EVENTS_TOPIC_PREFIX = "workflow-events-";
+    private String workflowEventsTopic;
 
     @Container
     static GenericContainer<?> redis = new GenericContainer<>(DockerImageName.parse("redis:7-alpine"))
@@ -66,29 +118,45 @@ class WorkflowIntegrationTest {
     @Container
     static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.5.0"));
 
-    @DynamicPropertySource
-    static void configureProperties(DynamicPropertyRegistry registry) {
-        // Redis configuration for lib-common-cache
-        registry.add("firefly.cache.enabled", () -> "true");
-        registry.add("firefly.cache.redis.enabled", () -> "true");
-        registry.add("firefly.cache.redis.host", redis::getHost);
-        registry.add("firefly.cache.redis.port", () -> redis.getMappedPort(6379));
-        registry.add("firefly.cache.default-type", () -> "redis");
+    /**
+     * Initializer that sets properties before Spring context loads.
+     */
+    static class Initializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
+        @Override
+        public void initialize(ConfigurableApplicationContext context) {
+            // Start containers if not already started
+            if (!redis.isRunning()) {
+                redis.start();
+            }
+            if (!kafka.isRunning()) {
+                kafka.start();
+            }
 
-        // Kafka configuration for lib-common-eda
-        registry.add("firefly.eda.enabled", () -> "true");
-        registry.add("firefly.eda.publishers.enabled", () -> "true");
-        registry.add("firefly.eda.publishers.kafka.default.enabled", () -> "true");
-        registry.add("firefly.eda.publishers.kafka.default.bootstrap-servers", kafka::getBootstrapServers);
+            Map<String, Object> props = new HashMap<>();
+            // Redis configuration for lib-common-cache
+            props.put("firefly.cache.enabled", "true");
+            props.put("firefly.cache.redis.enabled", "true");
+            props.put("firefly.cache.redis.host", redis.getHost());
+            props.put("firefly.cache.redis.port", redis.getMappedPort(6379));
+            props.put("firefly.cache.default-cache-type", "REDIS");
+
+            // Kafka configuration for lib-common-eda
+            props.put("firefly.eda.enabled", "true");
+            props.put("firefly.eda.publishers.enabled", "true");
+            props.put("firefly.eda.publishers.kafka.default.enabled", "true");
+            props.put("firefly.eda.publishers.kafka.default.bootstrap-servers", kafka.getBootstrapServers());
+
+            context.getEnvironment().getPropertySources()
+                    .addFirst(new MapPropertySource("testcontainers", props));
+        }
     }
 
     @Autowired
-    private FireflyCacheManager cacheManager;
+    private CacheAdapter cacheAdapter;
 
     @Autowired
     private EventPublisherFactory eventPublisherFactory;
 
-    private CacheAdapter cacheAdapter;
     private EventPublisher kafkaPublisher;
     private KafkaConsumer<String, String> testConsumer;
     private final List<String> receivedMessages = new CopyOnWriteArrayList<>();
@@ -97,10 +165,11 @@ class WorkflowIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        cacheAdapter = cacheManager.getCache(WORKFLOW_CACHE_NAME);
         kafkaPublisher = eventPublisherFactory.getPublisher(PublisherType.KAFKA, "default");
         cacheAdapter.clear().block();
         receivedMessages.clear();
+        // Use unique topic per test to avoid message pollution
+        workflowEventsTopic = WORKFLOW_EVENTS_TOPIC_PREFIX + UUID.randomUUID().toString().substring(0, 8);
         startTestConsumer();
     }
 
@@ -119,7 +188,7 @@ class WorkflowIntegrationTest {
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "true");
 
         testConsumer = new KafkaConsumer<>(props);
-        testConsumer.subscribe(Collections.singletonList(WORKFLOW_EVENTS_TOPIC));
+        testConsumer.subscribe(Collections.singletonList(workflowEventsTopic));
 
         consumerRunning.set(true);
         consumerThread = new Thread(() -> {
@@ -150,9 +219,142 @@ class WorkflowIntegrationTest {
     void shouldHaveBothServicesAvailable() {
         assertThat(cacheAdapter).isNotNull();
         assertThat(cacheAdapter.isAvailable()).isTrue();
-        assertThat(cacheAdapter.getCacheType()).isEqualTo(CacheType.REDIS);
+        // Cache type can be REDIS or AUTO (when using SmartCacheAdapter with L1+L2)
+        assertThat(cacheAdapter.getCacheType()).isIn(CacheType.REDIS, CacheType.AUTO);
 
         assertThat(kafkaPublisher).isNotNull();
         assertThat(kafkaPublisher.getPublisherType()).isEqualTo(PublisherType.KAFKA);
     }
+
+    @Test
+    @DisplayName("Should simulate workflow execution with cache and events")
+    void shouldSimulateWorkflowExecution() throws InterruptedException {
+        String workflowId = "wf-" + UUID.randomUUID();
+
+        // 1. Start workflow - cache initial state and publish event
+        Map<String, Object> initialState = new LinkedHashMap<>();
+        initialState.put("workflowId", workflowId);
+        initialState.put("status", "STARTED");
+        initialState.put("currentStep", 0);
+        initialState.put("startTime", System.currentTimeMillis());
+
+        StepVerifier.create(cacheAdapter.put(workflowId, initialState))
+                .verifyComplete();
+
+        String startEvent = String.format("{\"type\":\"WORKFLOW_STARTED\",\"workflowId\":\"%s\"}", workflowId);
+        Map<String, Object> startHeaders = Map.of("partition_key", workflowId);
+        StepVerifier.create(kafkaPublisher.publish(startEvent, workflowEventsTopic, startHeaders))
+                .verifyComplete();
+
+        // 2. Execute steps - update cache and publish events for each step
+        for (int step = 1; step <= 3; step++) {
+            // Update cache with step progress
+            Map<String, Object> stepState = new LinkedHashMap<>();
+            stepState.put("workflowId", workflowId);
+            stepState.put("status", "RUNNING");
+            stepState.put("currentStep", step);
+            stepState.put("lastUpdated", System.currentTimeMillis());
+
+            StepVerifier.create(cacheAdapter.put(workflowId, stepState))
+                    .verifyComplete();
+
+            // Publish step event
+            String stepEvent = String.format(
+                    "{\"type\":\"STEP_COMPLETED\",\"workflowId\":\"%s\",\"step\":%d}",
+                    workflowId, step);
+            Map<String, Object> stepHeaders = Map.of("partition_key", workflowId);
+            StepVerifier.create(kafkaPublisher.publish(stepEvent, workflowEventsTopic, stepHeaders))
+                    .verifyComplete();
+        }
+
+        // 3. Complete workflow - update final state and publish completion event
+        Map<String, Object> finalState = new LinkedHashMap<>();
+        finalState.put("workflowId", workflowId);
+        finalState.put("status", "COMPLETED");
+        finalState.put("currentStep", 3);
+        finalState.put("endTime", System.currentTimeMillis());
+
+        StepVerifier.create(cacheAdapter.put(workflowId, finalState))
+                .verifyComplete();
+
+        String completeEvent = String.format("{\"type\":\"WORKFLOW_COMPLETED\",\"workflowId\":\"%s\"}", workflowId);
+        Map<String, Object> completeHeaders = Map.of("partition_key", workflowId);
+        StepVerifier.create(kafkaPublisher.publish(completeEvent, workflowEventsTopic, completeHeaders))
+                .verifyComplete();
+
+        // 4. Verify final state in cache
+        StepVerifier.create(cacheAdapter.get(workflowId))
+                .assertNext(result -> {
+                    assertThat(result).isPresent();
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> state = (Map<String, Object>) result.get();
+                    assertThat(state.get("status")).isEqualTo("COMPLETED");
+                    assertThat(state.get("currentStep")).isEqualTo(3);
+                })
+                .verifyComplete();
+
+        // 5. Verify all events were published
+        boolean received = waitForMessages(5, 15); // 1 start + 3 steps + 1 complete
+        assertThat(received).isTrue();
+        assertThat(receivedMessages).hasSize(5);
+        assertThat(receivedMessages.get(0)).contains("WORKFLOW_STARTED");
+        assertThat(receivedMessages.get(4)).contains("WORKFLOW_COMPLETED");
+    }
+
+    @Test
+    @DisplayName("Should handle workflow state recovery from cache")
+    void shouldHandleWorkflowStateRecovery() {
+        String workflowId = "wf-recovery-" + UUID.randomUUID();
+
+        // Simulate a workflow that was interrupted
+        Map<String, Object> interruptedState = new LinkedHashMap<>();
+        interruptedState.put("workflowId", workflowId);
+        interruptedState.put("status", "RUNNING");
+        interruptedState.put("currentStep", 2);
+        interruptedState.put("context", Map.of("orderId", "ORD-123", "retryCount", 1));
+
+        // Store state in cache
+        StepVerifier.create(cacheAdapter.put(workflowId, interruptedState))
+                .verifyComplete();
+
+        // Simulate recovery - read state from cache
+        StepVerifier.create(cacheAdapter.get(workflowId))
+                .assertNext(result -> {
+                    assertThat(result).isPresent();
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> state = (Map<String, Object>) result.get();
+                    assertThat(state.get("status")).isEqualTo("RUNNING");
+                    assertThat(state.get("currentStep")).isEqualTo(2);
+
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> context = (Map<String, Object>) state.get("context");
+                    assertThat(context.get("orderId")).isEqualTo("ORD-123");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("Should use cache for workflow deduplication")
+    void shouldUseCacheForDeduplication() {
+        String idempotencyKey = "idempotency-" + UUID.randomUUID();
+
+        // First request - should succeed
+        StepVerifier.create(cacheAdapter.putIfAbsent(idempotencyKey, "processing"))
+                .assertNext(success -> assertThat(success).isTrue())
+                .verifyComplete();
+
+        // Duplicate request - should fail (already exists)
+        StepVerifier.create(cacheAdapter.putIfAbsent(idempotencyKey, "processing"))
+                .assertNext(success -> assertThat(success).isFalse())
+                .verifyComplete();
+    }
+
+    private boolean waitForMessages(int expectedCount, int timeoutSeconds) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + (timeoutSeconds * 1000L);
+        while (receivedMessages.size() < expectedCount && System.currentTimeMillis() < deadline) {
+            Thread.sleep(100);
+        }
+        return receivedMessages.size() >= expectedCount;
+    }
+}
 

@@ -16,6 +16,8 @@
 
 package com.firefly.common.workflow.testcontainers;
 
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -24,7 +26,7 @@ import org.testcontainers.utility.DockerImageName;
  * Testcontainers configuration for integration tests.
  * <p>
  * Provides Redis and Kafka containers for testing the workflow engine
- * with real infrastructure dependencies.
+ * with real infrastructure dependencies using lib-common-eda and lib-common-cache.
  */
 public class TestcontainersConfig {
 
@@ -60,14 +62,6 @@ public class TestcontainersConfig {
     }
 
     /**
-     * Gets the Redis connection URL.
-     */
-    public static String getRedisUrl() {
-        GenericContainer<?> container = getRedisContainer();
-        return String.format("redis://%s:%d", container.getHost(), container.getMappedPort(6379));
-    }
-
-    /**
      * Gets the Redis host.
      */
     public static String getRedisHost() {
@@ -86,6 +80,41 @@ public class TestcontainersConfig {
      */
     public static String getKafkaBootstrapServers() {
         return getKafkaContainer().getBootstrapServers();
+    }
+
+    /**
+     * Registers dynamic properties for lib-common-cache (Redis).
+     * Uses firefly.cache.redis.* namespace as per lib-common-cache configuration.
+     */
+    public static void registerRedisProperties(DynamicPropertyRegistry registry) {
+        GenericContainer<?> redis = getRedisContainer();
+        registry.add("firefly.cache.enabled", () -> "true");
+        registry.add("firefly.cache.redis.enabled", () -> "true");
+        registry.add("firefly.cache.redis.host", redis::getHost);
+        registry.add("firefly.cache.redis.port", () -> redis.getMappedPort(6379));
+    }
+
+    /**
+     * Registers dynamic properties for lib-common-eda (Kafka).
+     * Uses firefly.eda.publishers.kafka.* namespace as per lib-common-eda configuration.
+     */
+    public static void registerKafkaProperties(DynamicPropertyRegistry registry) {
+        KafkaContainer kafka = getKafkaContainer();
+        registry.add("firefly.eda.enabled", () -> "true");
+        registry.add("firefly.eda.publishers.enabled", () -> "true");
+        registry.add("firefly.eda.publishers.kafka.default.enabled", () -> "true");
+        registry.add("firefly.eda.publishers.kafka.default.bootstrap-servers", kafka::getBootstrapServers);
+        registry.add("firefly.eda.consumer.enabled", () -> "true");
+        registry.add("firefly.eda.consumer.kafka.default.enabled", () -> "true");
+        registry.add("firefly.eda.consumer.kafka.default.bootstrap-servers", kafka::getBootstrapServers);
+    }
+
+    /**
+     * Registers all dynamic properties for both Redis and Kafka.
+     */
+    public static void registerAllProperties(DynamicPropertyRegistry registry) {
+        registerRedisProperties(registry);
+        registerKafkaProperties(registry);
     }
 
     /**

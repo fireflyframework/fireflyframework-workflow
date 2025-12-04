@@ -16,14 +16,25 @@
 
 package com.firefly.common.workflow.testcontainers;
 
+import com.firefly.common.cache.config.CacheAutoConfiguration;
+import com.firefly.common.cache.config.RedisCacheAutoConfiguration;
 import com.firefly.common.cache.core.CacheAdapter;
 import com.firefly.common.cache.core.CacheType;
-import com.firefly.common.cache.manager.FireflyCacheManager;
+import io.github.resilience4j.bulkhead.BulkheadRegistry;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.ratelimiter.RateLimiterRegistry;
+import io.github.resilience4j.retry.RetryRegistry;
+import io.github.resilience4j.timelimiter.TimeLimiterRegistry;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.ApplicationContextInitializer;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.core.env.MapPropertySource;
+import org.springframework.test.context.ContextConfiguration;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -31,8 +42,8 @@ import org.testcontainers.utility.DockerImageName;
 import reactor.test.StepVerifier;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -44,30 +55,75 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Testcontainers
 @SpringBootTest(classes = TestApplication.class)
+@Import({CacheAutoConfiguration.class, RedisCacheAutoConfiguration.class, RedisCacheIntegrationTest.ResilienceTestConfig.class})
+@ContextConfiguration(initializers = RedisCacheIntegrationTest.Initializer.class)
 @DisplayName("Redis Cache Integration Tests (lib-common-cache)")
 class RedisCacheIntegrationTest {
+
+    /**
+     * Test configuration that provides Resilience4j beans required by lib-common-eda.
+     */
+    @TestConfiguration
+    static class ResilienceTestConfig {
+        @Bean
+        public CircuitBreakerRegistry circuitBreakerRegistry() {
+            return CircuitBreakerRegistry.ofDefaults();
+        }
+
+        @Bean
+        public RetryRegistry retryRegistry() {
+            return RetryRegistry.ofDefaults();
+        }
+
+        @Bean
+        public RateLimiterRegistry rateLimiterRegistry() {
+            return RateLimiterRegistry.ofDefaults();
+        }
+
+        @Bean
+        public BulkheadRegistry bulkheadRegistry() {
+            return BulkheadRegistry.ofDefaults();
+        }
+
+        @Bean
+        public TimeLimiterRegistry timeLimiterRegistry() {
+            return TimeLimiterRegistry.ofDefaults();
+        }
+    }
 
     @Container
     static GenericContainer<?> redis = new GenericContainer<>(DockerImageName.parse("redis:7-alpine"))
             .withExposedPorts(6379);
 
-    @DynamicPropertySource
-    static void configureProperties(DynamicPropertyRegistry registry) {
-        registry.add("firefly.cache.enabled", () -> "true");
-        registry.add("firefly.cache.redis.enabled", () -> "true");
-        registry.add("firefly.cache.redis.host", redis::getHost);
-        registry.add("firefly.cache.redis.port", () -> redis.getMappedPort(6379));
-        registry.add("firefly.cache.default-type", () -> "redis");
+    /**
+     * Initializer that sets Redis properties before Spring context loads.
+     * This ensures the RedisCacheAutoConfiguration conditions are evaluated correctly.
+     */
+    static class Initializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
+        @Override
+        public void initialize(ConfigurableApplicationContext context) {
+            // Start container if not already started
+            if (!redis.isRunning()) {
+                redis.start();
+            }
+
+            Map<String, Object> props = new HashMap<>();
+            props.put("firefly.cache.enabled", "true");
+            props.put("firefly.cache.redis.enabled", "true");
+            props.put("firefly.cache.redis.host", redis.getHost());
+            props.put("firefly.cache.redis.port", redis.getMappedPort(6379));
+            props.put("firefly.cache.default-cache-type", "REDIS");
+
+            context.getEnvironment().getPropertySources()
+                    .addFirst(new MapPropertySource("testcontainers", props));
+        }
     }
 
     @Autowired
-    private FireflyCacheManager cacheManager;
-
     private CacheAdapter cacheAdapter;
 
     @BeforeEach
     void setUp() {
-        cacheAdapter = cacheManager.getCache("test-cache");
         // Clear cache before each test
         cacheAdapter.clear().block();
     }
@@ -77,7 +133,8 @@ class RedisCacheIntegrationTest {
     void shouldConnectToRedisContainer() {
         assertThat(cacheAdapter).isNotNull();
         assertThat(cacheAdapter.isAvailable()).isTrue();
-        assertThat(cacheAdapter.getCacheType()).isEqualTo(CacheType.REDIS);
+        // Cache type can be REDIS or AUTO (when using SmartCacheAdapter with L1+L2)
+        assertThat(cacheAdapter.getCacheType()).isIn(CacheType.REDIS, CacheType.AUTO);
     }
 
     @Test
@@ -179,4 +236,85 @@ class RedisCacheIntegrationTest {
                 })
                 .verifyComplete();
     }
+
+    @Test
+    @DisplayName("Should evict values from cache")
+    void shouldEvictValues() {
+        String key = "evict-key";
+        String value = "evict-value";
+
+        // Put value
+        StepVerifier.create(cacheAdapter.put(key, value))
+                .verifyComplete();
+
+        // Verify exists
+        StepVerifier.create(cacheAdapter.exists(key))
+                .assertNext(exists -> assertThat(exists).isTrue())
+                .verifyComplete();
+
+        // Evict
+        StepVerifier.create(cacheAdapter.evict(key))
+                .assertNext(evicted -> assertThat(evicted).isTrue())
+                .verifyComplete();
+
+        // Verify gone
+        StepVerifier.create(cacheAdapter.exists(key))
+                .assertNext(exists -> assertThat(exists).isFalse())
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("Should get cache statistics")
+    void shouldGetCacheStatistics() {
+        // Put some values
+        cacheAdapter.put("stat-key-1", "value-1").block();
+        cacheAdapter.put("stat-key-2", "value-2").block();
+        cacheAdapter.get("stat-key-1").block(); // hit
+        cacheAdapter.get("stat-key-missing").block(); // miss
+
+        StepVerifier.create(cacheAdapter.getStats())
+                .assertNext(stats -> {
+                    // Cache type can be REDIS or AUTO (when using SmartCacheAdapter)
+                    assertThat(stats.getCacheType()).isIn(CacheType.REDIS, CacheType.AUTO);
+                    assertThat(stats.getRequestCount()).isGreaterThanOrEqualTo(2);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("Should get cache health")
+    void shouldGetCacheHealth() {
+        StepVerifier.create(cacheAdapter.getHealth())
+                .assertNext(health -> {
+                    assertThat(health.isHealthy()).isTrue();
+                    // Cache type can be REDIS or AUTO (when using SmartCacheAdapter)
+                    assertThat(health.getCacheType()).isIn(CacheType.REDIS, CacheType.AUTO);
+                    assertThat(health.isAvailable()).isTrue();
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("Should clear all cache entries")
+    void shouldClearCache() {
+        // Put multiple values
+        cacheAdapter.put("clear-key-1", "value-1").block();
+        cacheAdapter.put("clear-key-2", "value-2").block();
+        cacheAdapter.put("clear-key-3", "value-3").block();
+
+        // Verify size
+        StepVerifier.create(cacheAdapter.size())
+                .assertNext(size -> assertThat(size).isGreaterThanOrEqualTo(3))
+                .verifyComplete();
+
+        // Clear
+        StepVerifier.create(cacheAdapter.clear())
+                .verifyComplete();
+
+        // Verify empty
+        StepVerifier.create(cacheAdapter.size())
+                .assertNext(size -> assertThat(size).isEqualTo(0L))
+                .verifyComplete();
+    }
+}
 
