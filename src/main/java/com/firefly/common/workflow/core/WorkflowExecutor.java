@@ -41,9 +41,8 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Executes workflow steps and manages workflow progression.
@@ -73,6 +72,7 @@ public class WorkflowExecutor {
     private final WorkflowResilience workflowResilience;
 
     private final ExpressionParser spelParser = new SpelExpressionParser();
+    private final Map<String, WorkflowTopology> topologyCache = new ConcurrentHashMap<>();
 
     public WorkflowExecutor(
             WorkflowStateStore stateStore,
@@ -98,7 +98,10 @@ public class WorkflowExecutor {
     }
 
     /**
-     * Executes all steps in a workflow.
+     * Executes all steps in a workflow using topology-based execution.
+     * <p>
+     * Steps are organized into execution layers based on their dependencies.
+     * Steps within the same layer can execute in parallel if marked async.
      *
      * @param definition the workflow definition
      * @param instance the workflow instance
@@ -106,12 +109,132 @@ public class WorkflowExecutor {
      */
     public Mono<WorkflowInstance> executeWorkflow(WorkflowDefinition definition, WorkflowInstance instance) {
         return initializeWorkflowState(definition, instance, "workflow")
-                .then(definition.getFirstStep()
-                        .map(firstStep -> executeFromStep(definition, instance, firstStep, "workflow"))
-                        .orElseGet(() -> {
-                            log.warn("Workflow {} has no steps to execute", definition.workflowId());
-                            return Mono.just(instance.complete(null));
-                        }));
+                .then(Mono.defer(() -> {
+                    if (definition.steps().isEmpty()) {
+                        log.warn("Workflow {} has no steps to execute", definition.workflowId());
+                        return Mono.just(instance.complete(null));
+                    }
+
+                    // Get or create topology for this workflow
+                    WorkflowTopology topology = getOrCreateTopology(definition);
+                    List<List<WorkflowStepDefinition>> layers = topology.buildExecutionLayers();
+
+                    log.debug("Executing workflow {} with {} layers",
+                            definition.workflowId(), layers.size());
+
+                    // Execute layers sequentially
+                    return executeLayersSequentially(definition, instance, layers, 0, "workflow");
+                }));
+    }
+
+    /**
+     * Gets or creates a topology for the given workflow definition.
+     *
+     * @param definition the workflow definition
+     * @return the workflow topology
+     */
+    private WorkflowTopology getOrCreateTopology(WorkflowDefinition definition) {
+        return topologyCache.computeIfAbsent(definition.workflowId(),
+                id -> new WorkflowTopology(definition));
+    }
+
+    /**
+     * Executes workflow layers sequentially.
+     * <p>
+     * Each layer contains steps that can execute in parallel (if async).
+     * Layers are executed in order to respect dependencies.
+     */
+    private Mono<WorkflowInstance> executeLayersSequentially(
+            WorkflowDefinition definition,
+            WorkflowInstance instance,
+            List<List<WorkflowStepDefinition>> layers,
+            int layerIndex,
+            String triggeredBy) {
+
+        if (layerIndex >= layers.size()) {
+            // All layers completed
+            return completeWorkflow(definition, instance);
+        }
+
+        if (instance.status().isTerminal()) {
+            return Mono.just(instance);
+        }
+
+        if (instance.status() == WorkflowStatus.WAITING) {
+            return Mono.just(instance);
+        }
+
+        List<WorkflowStepDefinition> currentLayer = layers.get(layerIndex);
+        log.debug("Executing layer {} with {} steps for workflow {}",
+                layerIndex, currentLayer.size(), definition.workflowId());
+
+        // Execute all steps in the current layer
+        return executeLayer(definition, instance, currentLayer, triggeredBy)
+                .flatMap(updatedInstance -> {
+                    if (updatedInstance.status().isTerminal() ||
+                        updatedInstance.status() == WorkflowStatus.WAITING) {
+                        return Mono.just(updatedInstance);
+                    }
+                    // Continue to next layer
+                    return executeLayersSequentially(definition, updatedInstance, layers,
+                            layerIndex + 1, triggeredBy);
+                });
+    }
+
+    /**
+     * Executes all steps in a layer.
+     * <p>
+     * If multiple steps are in the layer and at least one is async,
+     * they execute in parallel. Otherwise, they execute sequentially.
+     */
+    private Mono<WorkflowInstance> executeLayer(
+            WorkflowDefinition definition,
+            WorkflowInstance instance,
+            List<WorkflowStepDefinition> steps,
+            String triggeredBy) {
+
+        if (steps.isEmpty()) {
+            return Mono.just(instance);
+        }
+
+        if (steps.size() == 1) {
+            // Single step - execute directly
+            return executeStepWithTracking(definition, instance, steps.get(0), triggeredBy);
+        }
+
+        // Check if any step is async - if so, execute in parallel
+        boolean hasAsyncSteps = steps.stream().anyMatch(WorkflowStepDefinition::async);
+
+        if (hasAsyncSteps) {
+            return executeParallelSteps(definition, instance, steps, triggeredBy);
+        }
+
+        // Execute sequentially within the layer
+        return executeStepsSequentially(definition, instance, steps, 0, triggeredBy);
+    }
+
+    /**
+     * Executes steps sequentially within a layer.
+     */
+    private Mono<WorkflowInstance> executeStepsSequentially(
+            WorkflowDefinition definition,
+            WorkflowInstance instance,
+            List<WorkflowStepDefinition> steps,
+            int stepIndex,
+            String triggeredBy) {
+
+        if (stepIndex >= steps.size()) {
+            return Mono.just(instance);
+        }
+
+        if (instance.status().isTerminal() || instance.status() == WorkflowStatus.WAITING) {
+            return Mono.just(instance);
+        }
+
+        return executeStepWithTracking(definition, instance, steps.get(stepIndex), triggeredBy)
+                .flatMap(updatedInstance ->
+                        executeStepsSequentially(definition, updatedInstance, steps,
+                                stepIndex + 1, triggeredBy));
     }
 
     /**
@@ -175,66 +298,6 @@ public class WorkflowExecutor {
     }
 
     /**
-     * Executes the workflow starting from a specific step.
-     */
-    private Mono<WorkflowInstance> executeFromStep(
-            WorkflowDefinition definition,
-            WorkflowInstance instance,
-            WorkflowStepDefinition step,
-            String triggeredBy) {
-        
-        // Check if this step and subsequent steps can be executed in parallel
-        List<WorkflowStepDefinition> parallelSteps = collectParallelSteps(definition, step);
-        
-        if (parallelSteps.size() > 1) {
-            // Execute parallel steps
-            return executeParallelSteps(definition, instance, parallelSteps, triggeredBy)
-                    .flatMap(updatedInstance -> continueAfterSteps(definition, updatedInstance, parallelSteps, triggeredBy));
-        }
-        
-        // Execute single step with state tracking
-        return executeStepWithTracking(definition, instance, step, triggeredBy)
-                .flatMap(updatedInstance -> {
-                    // Check if workflow should continue
-                    if (updatedInstance.status().isTerminal()) {
-                        return Mono.just(updatedInstance);
-                    }
-                    
-                    // Check if waiting for event
-                    if (updatedInstance.status() == WorkflowStatus.WAITING) {
-                        return Mono.just(updatedInstance);
-                    }
-                    
-                    // Get next step
-                    return definition.getNextStep(step.stepId())
-                            .map(nextStep -> executeFromStep(definition, updatedInstance, nextStep, "workflow"))
-                            .orElseGet(() -> completeWorkflow(definition, updatedInstance));
-                });
-    }
-    
-    /**
-     * Collects consecutive async steps that can be executed in parallel.
-     */
-    private List<WorkflowStepDefinition> collectParallelSteps(
-            WorkflowDefinition definition, WorkflowStepDefinition startStep) {
-        
-        List<WorkflowStepDefinition> parallelSteps = new ArrayList<>();
-        WorkflowStepDefinition current = startStep;
-        
-        while (current != null && current.async()) {
-            parallelSteps.add(current);
-            current = definition.getNextStep(current.stepId()).orElse(null);
-        }
-        
-        // If we only found async steps, we need at least the start step
-        if (parallelSteps.isEmpty()) {
-            parallelSteps.add(startStep);
-        }
-        
-        return parallelSteps;
-    }
-    
-    /**
      * Executes multiple steps in parallel.
      */
     private Mono<WorkflowInstance> executeParallelSteps(
@@ -242,10 +305,10 @@ public class WorkflowExecutor {
             WorkflowInstance instance,
             List<WorkflowStepDefinition> steps,
             String triggeredBy) {
-        
-        log.info("Executing {} steps in parallel for workflow {}", 
+
+        log.info("Executing {} steps in parallel for workflow {}",
                 steps.size(), definition.workflowId());
-        
+
         // Execute all steps in parallel and collect results
         return Flux.fromIterable(steps)
                 .flatMap(step -> executeStepWithTracking(definition, instance, step, triggeredBy)
@@ -263,27 +326,7 @@ public class WorkflowExecutor {
                     return merged;
                 });
     }
-    
-    /**
-     * Continues workflow execution after parallel steps.
-     */
-    private Mono<WorkflowInstance> continueAfterSteps(
-            WorkflowDefinition definition,
-            WorkflowInstance instance,
-            List<WorkflowStepDefinition> completedSteps,
-            String triggeredBy) {
-        
-        if (instance.status().isTerminal()) {
-            return Mono.just(instance);
-        }
-        
-        // Find the next step after all parallel steps
-        String lastStepId = completedSteps.get(completedSteps.size() - 1).stepId();
-        return definition.getNextStep(lastStepId)
-                .map(nextStep -> executeFromStep(definition, instance, nextStep, triggeredBy))
-                .orElseGet(() -> completeWorkflow(definition, instance));
-    }
-    
+
     /**
      * Completes the workflow and updates workflow state.
      */

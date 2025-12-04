@@ -555,6 +555,15 @@ public class WorkflowEngine {
     }
 
     /**
+     * Checks if step state tracking is enabled.
+     *
+     * @return true if step state tracking is enabled
+     */
+    public boolean isStepStateTrackingEnabled() {
+        return stepStateStore != null;
+    }
+
+    /**
      * Checks if the workflow engine is healthy.
      *
      * @return true if healthy
