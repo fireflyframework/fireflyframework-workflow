@@ -174,8 +174,199 @@ public class WorkflowService {
      */
     public Mono<WorkflowStatusResponse> retryWorkflow(String workflowId, String instanceId) {
         log.info("Retrying workflow: workflowId={}, instanceId={}", workflowId, instanceId);
-        
+
         return workflowEngine.retryWorkflow(workflowId, instanceId)
                 .map(instance -> toStatusResponse(workflowId, instance));
     }
+
+    /**
+     * Triggers a specific step in a workflow.
+     *
+     * @param workflowId the workflow ID
+     * @param instanceId the instance ID
+     * @param stepId the step ID to trigger
+     * @param input input data for the step
+     * @param triggeredBy source that triggered the step
+     * @return the workflow status response after step execution
+     */
+    public Mono<WorkflowStatusResponse> triggerStep(
+            String workflowId,
+            String instanceId,
+            String stepId,
+            Map<String, Object> input,
+            String triggeredBy) {
+
+        log.info("Triggering step: workflowId={}, instanceId={}, stepId={}, triggeredBy={}",
+                workflowId, instanceId, stepId, triggeredBy);
+
+        return workflowEngine.triggerStep(workflowId, instanceId, stepId, input, triggeredBy)
+                .map(instance -> toStatusResponse(workflowId, instance));
+    }
+
+    /**
+     * Gets the state of a specific step.
+     *
+     * @param workflowId the workflow ID
+     * @param instanceId the instance ID
+     * @param stepId the step ID
+     * @return the step state response
+     */
+    public Mono<StepStateResponse> getStepState(String workflowId, String instanceId, String stepId) {
+        return workflowEngine.getStepState(workflowId, instanceId, stepId)
+                .map(StepStateResponse::from);
+    }
+
+    /**
+     * Gets all step states for a workflow instance.
+     *
+     * @param workflowId the workflow ID
+     * @param instanceId the instance ID
+     * @return flux of step state responses
+     */
+    public Flux<StepStateResponse> getStepStates(String workflowId, String instanceId) {
+        return workflowEngine.getStepStates(workflowId, instanceId)
+                .map(StepStateResponse::from);
+    }
+
+    /**
+     * Gets the comprehensive workflow state.
+     *
+     * @param workflowId the workflow ID
+     * @param instanceId the instance ID
+     * @return the workflow state response
+     */
+    public Mono<WorkflowStateResponse> getWorkflowState(String workflowId, String instanceId) {
+        return workflowEngine.getWorkflowState(workflowId, instanceId)
+                .map(WorkflowStateResponse::from);
+    }
+
+    /**
+     * Finds all instances of a workflow.
+     *
+     * @param workflowId the workflow ID
+     * @return flux of workflow status responses
+     */
+    public Flux<WorkflowStatusResponse> findInstances(String workflowId) {
+        return workflowEngine.findInstances(workflowId)
+                .map(instance -> toStatusResponse(workflowId, instance));
+    }
+
+    /**
+     * Finds instances of a workflow by status.
+     *
+     * @param workflowId the workflow ID
+     * @param status the status to filter by
+     * @return flux of workflow status responses
+     */
+    public Flux<WorkflowStatusResponse> findInstances(String workflowId, WorkflowStatus status) {
+        return workflowEngine.findInstances(workflowId, status)
+                .map(instance -> toStatusResponse(workflowId, instance));
+    }
+
+    /**
+     * Checks if step state tracking is enabled.
+     *
+     * @return true if step state tracking is enabled
+     */
+    public boolean isStepStateTrackingEnabled() {
+        return workflowEngine.isStepStateTrackingEnabled();
+    }
+
+    // ========== Private Helper Methods ==========
+
+    /**
+     * Waits for a workflow to complete with polling.
+     */
+    private Mono<WorkflowInstance> waitForCompletion(WorkflowInstance instance, long timeoutMs) {
+        if (instance.status().isTerminal()) {
+            return Mono.just(instance);
+        }
+
+        Duration timeout = Duration.ofMillis(timeoutMs);
+        Duration pollInterval = Duration.ofMillis(100);
+
+        return Mono.defer(() -> workflowEngine.getStatus(instance.workflowId(), instance.instanceId()))
+                .repeatWhen(flux -> flux.delayElements(pollInterval))
+                .filter(i -> i.status().isTerminal())
+                .next()
+                .timeout(timeout)
+                .onErrorResume(e -> workflowEngine.getStatus(instance.workflowId(), instance.instanceId()));
+    }
+
+    /**
+     * Converts a WorkflowInstance to a WorkflowStatusResponse.
+     */
+    private WorkflowStatusResponse toStatusResponse(String workflowId, WorkflowInstance instance) {
+        int totalSteps = getTotalSteps(workflowId);
+        return WorkflowStatusResponse.from(instance, totalSteps);
+    }
+
+    /**
+     * Gets the total number of steps for a workflow.
+     */
+    private int getTotalSteps(String workflowId) {
+        return workflowEngine.getWorkflowDefinition(workflowId)
+                .map(def -> def.steps().size())
+                .orElse(0);
+    }
+
+    /**
+     * Converts a WorkflowInstance to a WorkflowResult.
+     */
+    private WorkflowResult toWorkflowResult(WorkflowInstance instance) {
+        return new WorkflowResult(
+                instance.instanceId(),
+                instance.workflowId(),
+                instance.status(),
+                instance.output(),
+                instance.errorMessage(),
+                instance.errorType()
+        );
+    }
+
+    /**
+     * Summary of a workflow definition.
+     */
+    public record WorkflowSummary(
+            String workflowId,
+            String name,
+            String version,
+            String description,
+            int stepCount
+    ) {
+        public static WorkflowSummary from(WorkflowDefinition def) {
+            return new WorkflowSummary(
+                    def.workflowId(),
+                    def.name(),
+                    def.version(),
+                    def.description(),
+                    def.steps().size()
+            );
+        }
+    }
+
+    /**
+     * Result of a workflow execution.
+     */
+    public record WorkflowResult(
+            String instanceId,
+            String workflowId,
+            WorkflowStatus status,
+            Object output,
+            String errorMessage,
+            String errorType
+    ) {
+        public boolean isCompleted() {
+            return status == WorkflowStatus.COMPLETED;
+        }
+
+        public boolean isFailed() {
+            return status == WorkflowStatus.FAILED;
+        }
+
+        public boolean isTerminal() {
+            return status.isTerminal();
+        }
+    }
+}
 
