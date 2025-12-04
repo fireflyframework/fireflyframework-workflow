@@ -61,7 +61,7 @@ public class WorkflowTopology {
         this.stepMap = new HashMap<>();
         this.dependencyGraph = new HashMap<>();
         this.reverseDependencyGraph = new HashMap<>();
-        
+
         buildGraph();
     }
 
@@ -149,3 +149,155 @@ public class WorkflowTopology {
         return false;
     }
 
+    /**
+     * Builds execution layers using Kahn's algorithm (topological sort).
+     * <p>
+     * Steps are organized into layers where each layer contains steps
+     * whose dependencies are all satisfied by previous layers.
+     *
+     * @return list of execution layers, each containing steps that can run in parallel
+     */
+    public List<List<WorkflowStepDefinition>> buildExecutionLayers() {
+        if (executionLayers != null) {
+            return executionLayers;
+        }
+
+        validate();
+
+        // Check if any step has dependencies
+        boolean hasDependencies = workflow.steps().stream()
+                .anyMatch(WorkflowStepDefinition::hasDependencies);
+
+        if (!hasDependencies) {
+            // Fall back to order-based execution
+            executionLayers = buildOrderBasedLayers();
+            log.debug("Using order-based execution for workflow '{}' ({} layers)",
+                    workflow.workflowId(), executionLayers.size());
+            return executionLayers;
+        }
+
+        // Use Kahn's algorithm for dependency-based execution
+        executionLayers = buildDependencyBasedLayers();
+        log.debug("Using dependency-based execution for workflow '{}' ({} layers)",
+                workflow.workflowId(), executionLayers.size());
+        return executionLayers;
+    }
+
+    private List<List<WorkflowStepDefinition>> buildOrderBasedLayers() {
+        // Group steps by order, each order becomes a layer
+        Map<Integer, List<WorkflowStepDefinition>> orderGroups = workflow.steps().stream()
+                .collect(Collectors.groupingBy(WorkflowStepDefinition::order));
+
+        return orderGroups.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(Map.Entry::getValue)
+                .collect(Collectors.toList());
+    }
+
+    private List<List<WorkflowStepDefinition>> buildDependencyBasedLayers() {
+        List<List<WorkflowStepDefinition>> layers = new ArrayList<>();
+        Map<String, Integer> inDegree = new HashMap<>();
+
+        // Calculate in-degree for each step
+        for (String stepId : stepMap.keySet()) {
+            inDegree.put(stepId, dependencyGraph.get(stepId).size());
+        }
+
+        Set<String> processed = new HashSet<>();
+
+        while (processed.size() < stepMap.size()) {
+            // Find all steps with in-degree 0 (no unprocessed dependencies)
+            List<WorkflowStepDefinition> currentLayer = new ArrayList<>();
+
+            for (Map.Entry<String, Integer> entry : inDegree.entrySet()) {
+                if (entry.getValue() == 0 && !processed.contains(entry.getKey())) {
+                    currentLayer.add(stepMap.get(entry.getKey()));
+                }
+            }
+
+            if (currentLayer.isEmpty()) {
+                // This shouldn't happen if validation passed
+                throw new IllegalStateException("Unable to build execution layers - possible cycle");
+            }
+
+            // Sort layer by order for deterministic execution within layer
+            currentLayer.sort(Comparator.comparingInt(WorkflowStepDefinition::order));
+            layers.add(currentLayer);
+
+            // Mark as processed and update in-degrees
+            for (WorkflowStepDefinition step : currentLayer) {
+                processed.add(step.stepId());
+                for (String dependentId : reverseDependencyGraph.getOrDefault(step.stepId(), Collections.emptySet())) {
+                    inDegree.put(dependentId, inDegree.get(dependentId) - 1);
+                }
+            }
+        }
+
+        return layers;
+    }
+
+    /**
+     * Gets the steps that depend on the given step.
+     *
+     * @param stepId the step ID
+     * @return set of dependent step IDs
+     */
+    public Set<String> getDependents(String stepId) {
+        return Collections.unmodifiableSet(
+                reverseDependencyGraph.getOrDefault(stepId, Collections.emptySet()));
+    }
+
+    /**
+     * Gets the dependencies of the given step.
+     *
+     * @param stepId the step ID
+     * @return set of dependency step IDs
+     */
+    public Set<String> getDependencies(String stepId) {
+        return Collections.unmodifiableSet(
+                dependencyGraph.getOrDefault(stepId, Collections.emptySet()));
+    }
+
+    /**
+     * Gets root steps (steps with no dependencies).
+     *
+     * @return list of root steps
+     */
+    public List<WorkflowStepDefinition> getRootSteps() {
+        return workflow.steps().stream()
+                .filter(WorkflowStepDefinition::isRootStep)
+                .sorted(Comparator.comparingInt(WorkflowStepDefinition::order))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Checks if all dependencies of a step are satisfied.
+     *
+     * @param stepId the step ID
+     * @param completedSteps set of completed step IDs
+     * @return true if all dependencies are satisfied
+     */
+    public boolean areDependenciesSatisfied(String stepId, Set<String> completedSteps) {
+        Set<String> deps = dependencyGraph.getOrDefault(stepId, Collections.emptySet());
+        return completedSteps.containsAll(deps);
+    }
+
+    /**
+     * Gets the workflow definition.
+     *
+     * @return the workflow definition
+     */
+    public WorkflowDefinition getWorkflow() {
+        return workflow;
+    }
+
+    /**
+     * Gets a step by ID.
+     *
+     * @param stepId the step ID
+     * @return optional containing the step if found
+     */
+    public Optional<WorkflowStepDefinition> getStep(String stepId) {
+        return Optional.ofNullable(stepMap.get(stepId));
+    }
+}
