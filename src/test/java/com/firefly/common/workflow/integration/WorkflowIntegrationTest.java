@@ -254,6 +254,61 @@ class WorkflowIntegrationTest {
         assertThat(asyncDef.supportsAsyncTrigger()).isTrue();
     }
 
+    @Test
+    @DisplayName("Should execute workflow with step dependencies in correct order")
+    void shouldExecuteWorkflowWithDependencies() {
+        // Register workflow with dependencies
+        DependencyWorkflow workflowBean = new DependencyWorkflow();
+        workflowAspect.postProcessAfterInitialization(workflowBean, "dependencyWorkflow");
+
+        // Verify registration
+        assertThat(registry.get("dependency-workflow")).isPresent();
+        WorkflowDefinition definition = registry.get("dependency-workflow").get();
+        assertThat(definition.steps()).hasSize(4);
+
+        // Verify dependencies are set correctly
+        assertThat(definition.getStep("step-b").get().dependsOn()).containsExactly("step-a");
+        assertThat(definition.getStep("step-c").get().dependsOn()).containsExactly("step-a");
+        assertThat(definition.getStep("step-d").get().dependsOn()).containsExactlyInAnyOrder("step-b", "step-c");
+
+        // Execute workflow
+        Map<String, Object> input = Map.of("value", "test");
+        WorkflowInstance instance = WorkflowInstance.create(definition, input, null, "test");
+
+        StepVerifier.create(executor.executeWorkflow(definition, instance.start("step-a")))
+                .assertNext(result -> {
+                    // All steps should be completed
+                    assertThat(result.getStepExecution("step-a")).isPresent();
+                    assertThat(result.getStepExecution("step-b")).isPresent();
+                    assertThat(result.getStepExecution("step-c")).isPresent();
+                    assertThat(result.getStepExecution("step-d")).isPresent();
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("Should execute steps with StepTriggerMode correctly")
+    void shouldRespectStepTriggerMode() {
+        // Register workflow with trigger modes
+        TriggerModeWorkflow workflowBean = new TriggerModeWorkflow();
+        workflowAspect.postProcessAfterInitialization(workflowBean, "triggerModeWorkflow");
+
+        WorkflowDefinition definition = registry.get("trigger-mode-workflow").get();
+
+        // Verify trigger modes are set correctly
+        assertThat(definition.getStep("event-step").get().triggerMode()).isEqualTo(StepTriggerMode.EVENT);
+        assertThat(definition.getStep("programmatic-step").get().triggerMode()).isEqualTo(StepTriggerMode.PROGRAMMATIC);
+        assertThat(definition.getStep("both-step").get().triggerMode()).isEqualTo(StepTriggerMode.BOTH);
+
+        // Verify helper methods
+        assertThat(definition.getStep("event-step").get().allowsEventTrigger()).isTrue();
+        assertThat(definition.getStep("event-step").get().allowsProgrammaticTrigger()).isFalse();
+        assertThat(definition.getStep("programmatic-step").get().allowsEventTrigger()).isFalse();
+        assertThat(definition.getStep("programmatic-step").get().allowsProgrammaticTrigger()).isTrue();
+        assertThat(definition.getStep("both-step").get().allowsEventTrigger()).isTrue();
+        assertThat(definition.getStep("both-step").get().allowsProgrammaticTrigger()).isTrue();
+    }
+
     // ==================== Sample Workflow Classes ====================
 
     @Slf4j
@@ -433,6 +488,88 @@ class WorkflowIntegrationTest {
         public Mono<String> step1(WorkflowContext ctx) {
             log.info("TEST_WORKFLOW [async-workflow] Step 'step1': Executing async step (triggered by 'order.created')");
             return Mono.just("done");
+        }
+    }
+
+    /**
+     * Workflow demonstrating step dependencies (DAG execution).
+     * Execution order: step-a -> (step-b, step-c in parallel) -> step-d
+     */
+    @Slf4j
+    @Workflow(id = "dependency-workflow", name = "Dependency Workflow")
+    static class DependencyWorkflow {
+
+        @WorkflowStep(id = "step-a", name = "Step A", order = 1)
+        public Mono<String> stepA(WorkflowContext ctx) {
+            log.info("TEST_WORKFLOW [dependency-workflow] Step 'step-a': Executing root step");
+            ctx.set("stepA", "completed");
+            return Mono.just("step-a-done");
+        }
+
+        @WorkflowStep(id = "step-b", name = "Step B", order = 2, dependsOn = {"step-a"})
+        public Mono<String> stepB(WorkflowContext ctx) {
+            log.info("TEST_WORKFLOW [dependency-workflow] Step 'step-b': Executing (depends on step-a)");
+            assertThat(ctx.get("stepA", String.class)).isEqualTo("completed");
+            ctx.set("stepB", "completed");
+            return Mono.just("step-b-done");
+        }
+
+        @WorkflowStep(id = "step-c", name = "Step C", order = 3, dependsOn = {"step-a"})
+        public Mono<String> stepC(WorkflowContext ctx) {
+            log.info("TEST_WORKFLOW [dependency-workflow] Step 'step-c': Executing (depends on step-a)");
+            assertThat(ctx.get("stepA", String.class)).isEqualTo("completed");
+            ctx.set("stepC", "completed");
+            return Mono.just("step-c-done");
+        }
+
+        @WorkflowStep(id = "step-d", name = "Step D", order = 4, dependsOn = {"step-b", "step-c"})
+        public Mono<String> stepD(WorkflowContext ctx) {
+            log.info("TEST_WORKFLOW [dependency-workflow] Step 'step-d': Executing (depends on step-b and step-c)");
+            assertThat(ctx.get("stepB", String.class)).isEqualTo("completed");
+            assertThat(ctx.get("stepC", String.class)).isEqualTo("completed");
+            return Mono.just("step-d-done");
+        }
+    }
+
+    /**
+     * Workflow demonstrating step trigger modes.
+     */
+    @Slf4j
+    @Workflow(id = "trigger-mode-workflow", name = "Trigger Mode Workflow")
+    static class TriggerModeWorkflow {
+
+        @WorkflowStep(
+                id = "event-step",
+                name = "Event Step",
+                order = 1,
+                triggerMode = StepTriggerMode.EVENT,
+                inputEventType = "order.created"
+        )
+        public Mono<String> eventStep(WorkflowContext ctx) {
+            log.info("TEST_WORKFLOW [trigger-mode-workflow] Step 'event-step': Event-triggered step");
+            return Mono.just("event-done");
+        }
+
+        @WorkflowStep(
+                id = "programmatic-step",
+                name = "Programmatic Step",
+                order = 2,
+                triggerMode = StepTriggerMode.PROGRAMMATIC
+        )
+        public Mono<String> programmaticStep(WorkflowContext ctx) {
+            log.info("TEST_WORKFLOW [trigger-mode-workflow] Step 'programmatic-step': Programmatic step");
+            return Mono.just("programmatic-done");
+        }
+
+        @WorkflowStep(
+                id = "both-step",
+                name = "Both Step",
+                order = 3,
+                triggerMode = StepTriggerMode.BOTH
+        )
+        public Mono<String> bothStep(WorkflowContext ctx) {
+            log.info("TEST_WORKFLOW [trigger-mode-workflow] Step 'both-step': Both trigger modes");
+            return Mono.just("both-done");
         }
     }
 }

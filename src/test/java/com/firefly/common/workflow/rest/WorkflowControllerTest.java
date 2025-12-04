@@ -16,11 +16,13 @@
 
 package com.firefly.common.workflow.rest;
 
-import com.firefly.common.workflow.core.WorkflowEngine;
 import com.firefly.common.workflow.exception.WorkflowNotFoundException;
 import com.firefly.common.workflow.model.*;
 import com.firefly.common.workflow.rest.dto.StartWorkflowRequest;
 import com.firefly.common.workflow.rest.dto.WorkflowStatusResponse;
+import com.firefly.common.workflow.service.WorkflowService;
+import com.firefly.common.workflow.service.WorkflowService.WorkflowResult;
+import com.firefly.common.workflow.service.WorkflowService.WorkflowSummary;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -35,8 +37,7 @@ import reactor.test.StepVerifier;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.when;
 
 /**
@@ -46,20 +47,20 @@ import static org.mockito.Mockito.when;
 class WorkflowControllerTest {
 
     @Mock
-    private WorkflowEngine workflowEngine;
+    private WorkflowService workflowService;
 
     private WorkflowController controller;
 
     @BeforeEach
     void setUp() {
-        controller = new WorkflowController(workflowEngine);
+        controller = new WorkflowController(workflowService);
     }
 
     @Test
     void shouldListWorkflows() {
-        WorkflowDefinition workflow1 = createTestDefinition("workflow-1");
-        WorkflowDefinition workflow2 = createTestDefinition("workflow-2");
-        when(workflowEngine.getAllWorkflows()).thenReturn(List.of(workflow1, workflow2));
+        WorkflowSummary summary1 = new WorkflowSummary("workflow-1", "Workflow 1", "1.0.0", "Description", 1);
+        WorkflowSummary summary2 = new WorkflowSummary("workflow-2", "Workflow 2", "1.0.0", "Description", 1);
+        when(workflowService.listWorkflows()).thenReturn(List.of(summary1, summary2));
 
         StepVerifier.create(controller.listWorkflows())
                 .assertNext(response -> {
@@ -72,7 +73,7 @@ class WorkflowControllerTest {
     @Test
     void shouldGetWorkflow() {
         WorkflowDefinition definition = createTestDefinition("test-workflow");
-        when(workflowEngine.getWorkflowDefinition("test-workflow"))
+        when(workflowService.getWorkflowDefinition("test-workflow"))
                 .thenReturn(Optional.of(definition));
 
         StepVerifier.create(controller.getWorkflow("test-workflow"))
@@ -85,7 +86,7 @@ class WorkflowControllerTest {
 
     @Test
     void shouldReturnNotFoundForUnknownWorkflow() {
-        when(workflowEngine.getWorkflowDefinition("unknown")).thenReturn(Optional.empty());
+        when(workflowService.getWorkflowDefinition("unknown")).thenReturn(Optional.empty());
 
         StepVerifier.create(controller.getWorkflow("unknown"))
                 .assertNext(response -> {
@@ -96,13 +97,10 @@ class WorkflowControllerTest {
 
     @Test
     void shouldStartWorkflow() {
-        WorkflowInstance instance = createTestInstance(WorkflowStatus.RUNNING);
-        WorkflowDefinition definition = createTestDefinition("test-workflow");
-        
-        when(workflowEngine.startWorkflow(eq("test-workflow"), any(), any(), eq("api")))
-                .thenReturn(Mono.just(instance));
-        when(workflowEngine.getWorkflowDefinition("test-workflow"))
-                .thenReturn(Optional.of(definition));
+        WorkflowStatusResponse statusResponse = createTestStatusResponse(WorkflowStatus.RUNNING);
+
+        when(workflowService.startWorkflow(eq("test-workflow"), any(), any(), eq("api"), anyBoolean(), anyLong()))
+                .thenReturn(Mono.just(statusResponse));
 
         StartWorkflowRequest request = new StartWorkflowRequest();
         request.setInput(Map.of("orderId", "123"));
@@ -119,13 +117,10 @@ class WorkflowControllerTest {
 
     @Test
     void shouldStartWorkflowWithEmptyRequest() {
-        WorkflowInstance instance = createTestInstance(WorkflowStatus.RUNNING);
-        WorkflowDefinition definition = createTestDefinition("test-workflow");
-        
-        when(workflowEngine.startWorkflow(eq("test-workflow"), any(), any(), eq("api")))
-                .thenReturn(Mono.just(instance));
-        when(workflowEngine.getWorkflowDefinition("test-workflow"))
-                .thenReturn(Optional.of(definition));
+        WorkflowStatusResponse statusResponse = createTestStatusResponse(WorkflowStatus.RUNNING);
+
+        when(workflowService.startWorkflow(eq("test-workflow"), any(), any(), eq("api"), anyBoolean(), anyLong()))
+                .thenReturn(Mono.just(statusResponse));
 
         StepVerifier.create(controller.startWorkflow("test-workflow", null))
                 .assertNext(response -> {
@@ -136,7 +131,7 @@ class WorkflowControllerTest {
 
     @Test
     void shouldReturnNotFoundWhenStartingUnknownWorkflow() {
-        when(workflowEngine.startWorkflow(eq("unknown"), any(), any(), eq("api")))
+        when(workflowService.startWorkflow(eq("unknown"), any(), any(), eq("api"), anyBoolean(), anyLong()))
                 .thenReturn(Mono.error(new WorkflowNotFoundException("unknown")));
 
         StepVerifier.create(controller.startWorkflow("unknown", new StartWorkflowRequest()))
@@ -148,13 +143,10 @@ class WorkflowControllerTest {
 
     @Test
     void shouldGetStatus() {
-        WorkflowInstance instance = createTestInstance(WorkflowStatus.RUNNING);
-        WorkflowDefinition definition = createTestDefinition("test-workflow");
-        
-        when(workflowEngine.getStatus("test-workflow", "instance-1"))
-                .thenReturn(Mono.just(instance));
-        when(workflowEngine.getWorkflowDefinition("test-workflow"))
-                .thenReturn(Optional.of(definition));
+        WorkflowStatusResponse statusResponse = createTestStatusResponse(WorkflowStatus.RUNNING);
+
+        when(workflowService.getStatus("test-workflow", "instance-1"))
+                .thenReturn(Mono.just(statusResponse));
 
         StepVerifier.create(controller.getStatus("test-workflow", "instance-1"))
                 .assertNext(response -> {
@@ -167,10 +159,13 @@ class WorkflowControllerTest {
 
     @Test
     void shouldCollectResultWhenCompleted() {
-        WorkflowInstance completed = createTestInstance(WorkflowStatus.COMPLETED);
-        
-        when(workflowEngine.getStatus("test-workflow", "instance-1"))
-                .thenReturn(Mono.just(completed));
+        WorkflowResult result = new WorkflowResult(
+                "instance-1", "test-workflow", WorkflowStatus.COMPLETED,
+                Map.of("result", "done"), null, null
+        );
+
+        when(workflowService.collectResult("test-workflow", "instance-1"))
+                .thenReturn(Mono.just(result));
 
         StepVerifier.create(controller.collectResult("test-workflow", "instance-1"))
                 .assertNext(response -> {
@@ -184,10 +179,13 @@ class WorkflowControllerTest {
 
     @Test
     void shouldReturnAcceptedWhenStillRunning() {
-        WorkflowInstance running = createTestInstance(WorkflowStatus.RUNNING);
-        
-        when(workflowEngine.getStatus("test-workflow", "instance-1"))
-                .thenReturn(Mono.just(running));
+        WorkflowResult result = new WorkflowResult(
+                "instance-1", "test-workflow", WorkflowStatus.RUNNING,
+                null, null, null
+        );
+
+        when(workflowService.collectResult("test-workflow", "instance-1"))
+                .thenReturn(Mono.just(result));
 
         StepVerifier.create(controller.collectResult("test-workflow", "instance-1"))
                 .assertNext(response -> {
@@ -198,13 +196,10 @@ class WorkflowControllerTest {
 
     @Test
     void shouldCancelWorkflow() {
-        WorkflowInstance cancelled = createTestInstance(WorkflowStatus.CANCELLED);
-        WorkflowDefinition definition = createTestDefinition("test-workflow");
-        
-        when(workflowEngine.cancelWorkflow("test-workflow", "instance-1"))
-                .thenReturn(Mono.just(cancelled));
-        when(workflowEngine.getWorkflowDefinition("test-workflow"))
-                .thenReturn(Optional.of(definition));
+        WorkflowStatusResponse statusResponse = createTestStatusResponse(WorkflowStatus.CANCELLED);
+
+        when(workflowService.cancelWorkflow("test-workflow", "instance-1"))
+                .thenReturn(Mono.just(statusResponse));
 
         StepVerifier.create(controller.cancelWorkflow("test-workflow", "instance-1"))
                 .assertNext(response -> {
@@ -216,13 +211,10 @@ class WorkflowControllerTest {
 
     @Test
     void shouldRetryWorkflow() {
-        WorkflowInstance retried = createTestInstance(WorkflowStatus.RUNNING);
-        WorkflowDefinition definition = createTestDefinition("test-workflow");
-        
-        when(workflowEngine.retryWorkflow("test-workflow", "instance-1"))
-                .thenReturn(Mono.just(retried));
-        when(workflowEngine.getWorkflowDefinition("test-workflow"))
-                .thenReturn(Optional.of(definition));
+        WorkflowStatusResponse statusResponse = createTestStatusResponse(WorkflowStatus.RUNNING);
+
+        when(workflowService.retryWorkflow("test-workflow", "instance-1"))
+                .thenReturn(Mono.just(statusResponse));
 
         StepVerifier.create(controller.retryWorkflow("test-workflow", "instance-1"))
                 .assertNext(response -> {
@@ -233,14 +225,11 @@ class WorkflowControllerTest {
 
     @Test
     void shouldListInstances() {
-        WorkflowInstance instance1 = createTestInstance(WorkflowStatus.RUNNING);
-        WorkflowInstance instance2 = createTestInstance(WorkflowStatus.COMPLETED);
-        WorkflowDefinition definition = createTestDefinition("test-workflow");
-        
-        when(workflowEngine.findInstances("test-workflow"))
-                .thenReturn(Flux.just(instance1, instance2));
-        when(workflowEngine.getWorkflowDefinition("test-workflow"))
-                .thenReturn(Optional.of(definition));
+        WorkflowStatusResponse response1 = createTestStatusResponse(WorkflowStatus.RUNNING);
+        WorkflowStatusResponse response2 = createTestStatusResponse(WorkflowStatus.COMPLETED);
+
+        when(workflowService.findInstances("test-workflow"))
+                .thenReturn(Flux.just(response1, response2));
 
         StepVerifier.create(controller.listInstances("test-workflow", null))
                 .expectNextCount(2)
@@ -249,13 +238,10 @@ class WorkflowControllerTest {
 
     @Test
     void shouldListInstancesByStatus() {
-        WorkflowInstance running = createTestInstance(WorkflowStatus.RUNNING);
-        WorkflowDefinition definition = createTestDefinition("test-workflow");
-        
-        when(workflowEngine.findInstances("test-workflow", WorkflowStatus.RUNNING))
-                .thenReturn(Flux.just(running));
-        when(workflowEngine.getWorkflowDefinition("test-workflow"))
-                .thenReturn(Optional.of(definition));
+        WorkflowStatusResponse statusResponse = createTestStatusResponse(WorkflowStatus.RUNNING);
+
+        when(workflowService.findInstances("test-workflow", WorkflowStatus.RUNNING))
+                .thenReturn(Flux.just(statusResponse));
 
         StepVerifier.create(controller.listInstances("test-workflow", WorkflowStatus.RUNNING))
                 .expectNextCount(1)
@@ -277,15 +263,18 @@ class WorkflowControllerTest {
                 .build();
     }
 
-    private WorkflowInstance createTestInstance(WorkflowStatus status) {
-        return new WorkflowInstance(
-                "instance-1", "test-workflow", "Test Workflow", "1.0.0",
-                status, "step-1",
-                Map.of(), Map.of("input", "value"), 
-                status == WorkflowStatus.COMPLETED ? Map.of("result", "done") : null,
-                List.of(),
-                null, null, "corr-1", "api",
-                null, null, status.isTerminal() ? java.time.Instant.now() : null
-        );
+    private WorkflowStatusResponse createTestStatusResponse(WorkflowStatus status) {
+        return WorkflowStatusResponse.builder()
+                .instanceId("instance-1")
+                .workflowId("test-workflow")
+                .workflowName("Test Workflow")
+                .workflowVersion("1.0.0")
+                .status(status)
+                .currentStepId("step-1")
+                .progress(status == WorkflowStatus.COMPLETED ? 100 : 50)
+                .correlationId("corr-1")
+                .triggeredBy("api")
+                .steps(List.of())
+                .build();
     }
 }

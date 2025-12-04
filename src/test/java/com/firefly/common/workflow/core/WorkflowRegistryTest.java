@@ -171,19 +171,94 @@ class WorkflowRegistryTest {
                 .name("Original")
                 .steps(List.of(createTestStep("step-1")))
                 .build();
-        
+
         WorkflowDefinition updated = WorkflowDefinition.builder()
                 .workflowId("test-workflow")
                 .name("Updated")
                 .steps(List.of(createTestStep("step-1")))
                 .build();
-        
+
         registry.register(original);
         registry.register(updated);
-        
+
         Optional<WorkflowDefinition> result = registry.get("test-workflow");
         assertThat(result).isPresent();
         assertThat(result.get().name()).isEqualTo("Updated");
+    }
+
+    @Test
+    void shouldRegisterWorkflowWithValidDependencies() {
+        WorkflowStepDefinition step1 = WorkflowStepDefinition.builder()
+                .stepId("step-1")
+                .name("Step 1")
+                .order(1)
+                .build();
+
+        WorkflowStepDefinition step2 = WorkflowStepDefinition.builder()
+                .stepId("step-2")
+                .name("Step 2")
+                .order(2)
+                .dependsOn(List.of("step-1"))
+                .build();
+
+        WorkflowDefinition workflow = WorkflowDefinition.builder()
+                .workflowId("dependency-workflow")
+                .name("Dependency Workflow")
+                .steps(List.of(step1, step2))
+                .build();
+
+        registry.register(workflow);
+
+        assertThat(registry.contains("dependency-workflow")).isTrue();
+    }
+
+    @Test
+    void shouldRejectWorkflowWithMissingDependency() {
+        WorkflowStepDefinition step = WorkflowStepDefinition.builder()
+                .stepId("step-1")
+                .name("Step 1")
+                .order(1)
+                .dependsOn(List.of("non-existent-step"))
+                .build();
+
+        WorkflowDefinition workflow = WorkflowDefinition.builder()
+                .workflowId("invalid-workflow")
+                .name("Invalid Workflow")
+                .steps(List.of(step))
+                .build();
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                WorkflowValidationException.class,
+                () -> registry.register(workflow)
+        );
+    }
+
+    @Test
+    void shouldRejectWorkflowWithCyclicDependency() {
+        WorkflowStepDefinition step1 = WorkflowStepDefinition.builder()
+                .stepId("step-1")
+                .name("Step 1")
+                .order(1)
+                .dependsOn(List.of("step-2"))
+                .build();
+
+        WorkflowStepDefinition step2 = WorkflowStepDefinition.builder()
+                .stepId("step-2")
+                .name("Step 2")
+                .order(2)
+                .dependsOn(List.of("step-1"))
+                .build();
+
+        WorkflowDefinition workflow = WorkflowDefinition.builder()
+                .workflowId("cyclic-workflow")
+                .name("Cyclic Workflow")
+                .steps(List.of(step1, step2))
+                .build();
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                WorkflowValidationException.class,
+                () -> registry.register(workflow)
+        );
     }
 
     private WorkflowDefinition createTestWorkflow(String id) {
