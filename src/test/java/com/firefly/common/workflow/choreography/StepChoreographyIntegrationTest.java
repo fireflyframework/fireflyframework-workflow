@@ -123,10 +123,10 @@ class StepChoreographyIntegrationTest {
         // Mock application context (only needed for programmatic handlers)
         applicationContext = mock(ApplicationContext.class);
         
-        // Real executor and engine (null tracer and metrics for tests)
+        // Real executor and engine (null tracer, metrics, resilience, and DLQ for tests)
         executor = new WorkflowExecutor(
                 stateStore, stepStateStore, eventPublisher, properties,
-                applicationContext, objectMapper, workflowAspect, null, null, null);
+                applicationContext, objectMapper, workflowAspect, null, null, null, null);
         engine = new WorkflowEngine(
                 registry, executor, stateStore, eventPublisher, properties, stepStateStore, null);
         
@@ -950,7 +950,7 @@ class StepChoreographyIntegrationTest {
         // Create executor with resilience
         WorkflowExecutor resilienceExecutor = new WorkflowExecutor(
                 stateStore, stepStateStore, eventPublisher, resilienceProperties,
-                applicationContext, objectMapper, workflowAspect, null, null, resilience);
+                applicationContext, objectMapper, workflowAspect, null, null, resilience, null);
         WorkflowEngine resilienceEngine = new WorkflowEngine(
                 registry, resilienceExecutor, stateStore, eventPublisher, resilienceProperties, stepStateStore, null);
 
@@ -1003,7 +1003,7 @@ class StepChoreographyIntegrationTest {
         // Create executor with resilience
         WorkflowExecutor resilienceExecutor = new WorkflowExecutor(
                 stateStore, stepStateStore, eventPublisher, resilienceProperties,
-                applicationContext, objectMapper, workflowAspect, null, null, resilience);
+                applicationContext, objectMapper, workflowAspect, null, null, resilience, null);
         WorkflowEngine resilienceEngine = new WorkflowEngine(
                 registry, resilienceExecutor, stateStore, eventPublisher, resilienceProperties, stepStateStore, null);
 
@@ -1042,7 +1042,7 @@ class StepChoreographyIntegrationTest {
         // Create executor with resilience
         WorkflowExecutor resilienceExecutor = new WorkflowExecutor(
                 stateStore, stepStateStore, eventPublisher, resilienceProperties,
-                applicationContext, objectMapper, workflowAspect, null, null, resilience);
+                applicationContext, objectMapper, workflowAspect, null, null, resilience, null);
         WorkflowEngine resilienceEngine = new WorkflowEngine(
                 registry, resilienceExecutor, stateStore, eventPublisher, resilienceProperties, stepStateStore, null);
 
@@ -1104,7 +1104,7 @@ class StepChoreographyIntegrationTest {
         // Create executor with resilience
         WorkflowExecutor resilienceExecutor = new WorkflowExecutor(
                 stateStore, stepStateStore, eventPublisher, resilienceProperties,
-                applicationContext, objectMapper, workflowAspect, null, null, resilience);
+                applicationContext, objectMapper, workflowAspect, null, null, resilience, null);
         WorkflowEngine resilienceEngine = new WorkflowEngine(
                 registry, resilienceExecutor, stateStore, eventPublisher, resilienceProperties, stepStateStore, null);
 

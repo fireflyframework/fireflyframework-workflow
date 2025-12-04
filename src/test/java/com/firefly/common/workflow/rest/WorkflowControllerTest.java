@@ -99,7 +99,7 @@ class WorkflowControllerTest {
     void shouldStartWorkflow() {
         WorkflowStatusResponse statusResponse = createTestStatusResponse(WorkflowStatus.RUNNING);
 
-        when(workflowService.startWorkflow(eq("test-workflow"), any(), any(), eq("api"), anyBoolean(), anyLong()))
+        when(workflowService.startWorkflow(eq("test-workflow"), any(), any(), eq("api"), anyBoolean(), anyLong(), anyBoolean()))
                 .thenReturn(Mono.just(statusResponse));
 
         StartWorkflowRequest request = new StartWorkflowRequest();
@@ -119,7 +119,7 @@ class WorkflowControllerTest {
     void shouldStartWorkflowWithEmptyRequest() {
         WorkflowStatusResponse statusResponse = createTestStatusResponse(WorkflowStatus.RUNNING);
 
-        when(workflowService.startWorkflow(eq("test-workflow"), any(), any(), eq("api"), anyBoolean(), anyLong()))
+        when(workflowService.startWorkflow(eq("test-workflow"), any(), any(), eq("api"), anyBoolean(), anyLong(), anyBoolean()))
                 .thenReturn(Mono.just(statusResponse));
 
         StepVerifier.create(controller.startWorkflow("test-workflow", null))
@@ -131,7 +131,7 @@ class WorkflowControllerTest {
 
     @Test
     void shouldReturnNotFoundWhenStartingUnknownWorkflow() {
-        when(workflowService.startWorkflow(eq("unknown"), any(), any(), eq("api"), anyBoolean(), anyLong()))
+        when(workflowService.startWorkflow(eq("unknown"), any(), any(), eq("api"), anyBoolean(), anyLong(), anyBoolean()))
                 .thenReturn(Mono.error(new WorkflowNotFoundException("unknown")));
 
         StepVerifier.create(controller.startWorkflow("unknown", new StartWorkflowRequest()))

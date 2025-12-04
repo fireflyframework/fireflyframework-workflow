@@ -83,7 +83,7 @@ class WorkflowIntegrationTest {
         workflowAspect = new WorkflowAspect(registry);
         executor = new WorkflowExecutor(
                 stateStore, null, eventPublisher, properties,
-                applicationContext, objectMapper, workflowAspect, null, null, null);
+                applicationContext, objectMapper, workflowAspect, null, null, null, null);
         engine = new WorkflowEngine(registry, executor, stateStore, eventPublisher, properties);
 
         // Default mock behavior

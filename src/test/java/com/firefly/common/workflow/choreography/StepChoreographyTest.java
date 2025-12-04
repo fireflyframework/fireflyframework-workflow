@@ -86,7 +86,7 @@ class StepChoreographyTest {
         workflowAspect = new WorkflowAspect(registry);
         executor = new WorkflowExecutor(
                 stateStore, stepStateStore, eventPublisher, properties,
-                applicationContext, objectMapper, workflowAspect, null, null, null);
+                applicationContext, objectMapper, workflowAspect, null, null, null, null);
         engine = new WorkflowEngine(registry, executor, stateStore, eventPublisher, properties, stepStateStore, null);
 
         // Default mock behavior
