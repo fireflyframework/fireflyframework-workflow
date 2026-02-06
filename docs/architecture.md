@@ -27,8 +27,8 @@ graph TB
     end
 
     subgraph "Infrastructure"
-        CACHE[(lib-common-cache<br/>Redis/Caffeine)]
-        EDA[lib-common-eda<br/>Kafka/RabbitMQ]
+        CACHE[(fireflyframework-cache<br/>Redis/Caffeine)]
+        EDA[fireflyframework-eda<br/>Kafka/RabbitMQ]
     end
 
     REST --> WE
@@ -414,7 +414,7 @@ graph TB
 
 ## Integration Points
 
-### lib-common-cache
+### fireflyframework-cache
 
 Used for state persistence:
 - Workflow instance state
@@ -425,7 +425,7 @@ Supports:
 - Redis (production)
 - Caffeine (development/testing)
 
-### lib-common-eda
+### fireflyframework-eda
 
 Used for event publishing and listening:
 - Workflow lifecycle events

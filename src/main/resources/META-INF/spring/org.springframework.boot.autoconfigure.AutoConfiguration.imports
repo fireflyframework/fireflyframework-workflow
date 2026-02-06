@@ -1,4 +1,4 @@
-com.firefly.common.workflow.config.WorkflowEngineAutoConfiguration
-com.firefly.common.workflow.tracing.WorkflowTracingAutoConfiguration
-com.firefly.common.workflow.metrics.WorkflowMetricsAutoConfiguration
-com.firefly.common.workflow.resilience.WorkflowResilienceAutoConfiguration
+org.fireflyframework.workflow.config.WorkflowEngineAutoConfiguration
+org.fireflyframework.workflow.tracing.WorkflowTracingAutoConfiguration
+org.fireflyframework.workflow.metrics.WorkflowMetricsAutoConfiguration
+org.fireflyframework.workflow.resilience.WorkflowResilienceAutoConfiguration

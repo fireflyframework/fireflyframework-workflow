@@ -5,14 +5,14 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Resilience4j](https://img.shields.io/badge/Resilience4j-2.x-orange.svg)](https://resilience4j.readme.io/)
 
-A production-ready, **event-driven** workflow orchestration library for the Firefly OpenCore Banking Platform. This library enables **microservice choreography** through event-based communication, where workflows are triggered by domain events and individual steps can independently listen for and emit events.
+A production-ready, **event-driven** workflow orchestration library for the Firefly Framework. This library enables **microservice choreography** through event-based communication, where workflows are triggered by domain events and individual steps can independently listen for and emit events.
 
 ### What This Library Solves
 
 In distributed microservice architectures, coordinating multi-step business processes across services is challenging. This library provides:
 
 - **Decoupled Process Orchestration**: Define business workflows that span multiple services without tight coupling. Each step can be triggered independently by events, enabling true choreography patterns where services communicate through events rather than direct calls.
-- **Durable State Management**: Workflow and step states are persisted to Redis (via `lib-common-cache`), ensuring processes survive service restarts and enabling long-running workflows that may span hours or days.
+- **Durable State Management**: Workflow and step states are persisted to Redis (via `fireflyframework-cache`), ensuring processes survive service restarts and enabling long-running workflows that may span hours or days.
 - **Production-Grade Resilience**: Built-in circuit breakers, rate limiters, bulkheads, and time limiters (via Resilience4j) protect your workflows from cascading failures and resource exhaustion.
 - **Full Observability**: OpenTelemetry tracing and Micrometer metrics provide visibility into workflow execution, step durations, failure rates, and system health.
 
@@ -20,7 +20,7 @@ In distributed microservice architectures, coordinating multi-step business proc
 
 > **Important**: This is a **business process workflow engine**, NOT a saga/transactional engine.
 
-| Aspect | lib-workflow-engine | lib-transactional-engine |
+| Aspect | fireflyframework-workflow-engine | lib-transactional-engine |
 |--------|---------------------|--------------------------|
 | **Purpose** | Orchestrate multi-step business processes | Manage distributed transactions with compensation |
 | **Consistency** | Eventually consistent, event-driven | ACID-like guarantees with saga patterns |
@@ -31,24 +31,24 @@ Use `lib-transactional-engine` when you need distributed transaction guarantees 
 
 ## ✨ Key Features
 
-| Feature | Description |
-|---------|-------------|
-| **📡 Event-Driven Architecture** | Workflows triggered by events, steps that listen for and emit events |
-| **🔄 Step-Level Choreography** | Independent step triggering via events with per-step state persistence |
-| **🔗 Dependency Management** | Explicit step dependencies via `dependsOn` with DAG validation |
-| **🎯 Annotation-Based Workflows** | Define workflows using `@Workflow` and `@WorkflowStep` annotations |
-| **💾 State Persistence** | Persist workflow and step states using Redis via `lib-common-cache` |
-| **🛡️ Resilience4j Integration** | Circuit breaker, rate limiter, bulkhead, and time limiter |
-| **⚡ Parallel Execution** | Execute async steps concurrently within dependency layers |
-| **🔀 Conditional Steps** | Skip steps based on SpEL expressions |
-| **📊 Observability** | OpenTelemetry tracing and Micrometer metrics |
-| **🌐 REST API** | Standardized API for workflow and step operations |
-| **⚛️ Reactive Architecture** | Built on Project Reactor for non-blocking execution |
-| **⏱️ Scheduled Workflows** | Cron-based workflow scheduling with `@ScheduledWorkflow` |
-| **⏸️ Suspension & Resumption** | Pause and resume workflows during incidents |
-| **🔍 Dry-Run Mode** | Test workflows without executing side effects |
-| **📈 Topology Visualization** | DAG visualization for React Flow / Mermaid.js |
-| **📥 Dead Letter Queue** | DLQ management for failed workflow replay |
+| Feature                         | Description |
+|---------------------------------|-------------|
+| ** Event-Driven Architecture**  | Workflows triggered by events, steps that listen for and emit events |
+| ** Step-Level Choreography**    | Independent step triggering via events with per-step state persistence |
+| ** Dependency Management**      | Explicit step dependencies via `dependsOn` with DAG validation |
+| ** Annotation-Based Workflows** | Define workflows using `@Workflow` and `@WorkflowStep` annotations |
+| ** State Persistence**          | Persist workflow and step states using Redis via `fireflyframework-cache` |
+| ** Resilience4j Integration**   | Circuit breaker, rate limiter, bulkhead, and time limiter |
+| ** Parallel Execution**         | Execute async steps concurrently within dependency layers |
+| ** Conditional Steps**          | Skip steps based on SpEL expressions |
+| ** Observability**              | OpenTelemetry tracing and Micrometer metrics |
+| ** REST API**                   | Standardized API for workflow and step operations |
+| ** Reactive Architecture**      | Built on Project Reactor for non-blocking execution |
+| ** Scheduled Workflows**        | Cron-based workflow scheduling with `@ScheduledWorkflow` |
+| ** Suspension & Resumption**    | Pause and resume workflows during incidents |
+| ** Dry-Run Mode**               | Test workflows without executing side effects |
+| ** Topology Visualization**     | DAG visualization for React Flow / Mermaid.js |
+| ** Dead Letter Queue**          | DLQ management for failed workflow replay |
 
 ## 📚 Documentation
 
@@ -68,8 +68,8 @@ Add the dependency to your `pom.xml`:
 
 ```xml
 <dependency>
-    <groupId>com.firefly</groupId>
-    <artifactId>lib-workflow-engine</artifactId>
+    <groupId>org.fireflyframework</groupId>
+    <artifactId>fireflyframework-workflow-engine</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 ```
@@ -117,7 +117,7 @@ public class OrderProcessingWorkflow {
 
 ### Trigger via Event
 
-Publish an event to trigger the workflow (using `lib-common-eda`):
+Publish an event to trigger the workflow (using `fireflyframework-eda`):
 
 ```java
 @Service
@@ -211,7 +211,7 @@ firefly:
       default-destination: workflow-events
       publish-step-events: true
 
-  # lib-common-eda configuration for Kafka
+  # fireflyframework-eda configuration for Kafka
   eda:
     publishers:
       kafka:
@@ -313,8 +313,8 @@ The library follows a **layered architecture** with clear separation of concerns
 │                        Client Applications                      │
 │                    (REST API / Event Triggers)                  │
 └─────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
+                                │
+                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                        WorkflowEngine                           │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
@@ -322,8 +322,8 @@ The library follows a **layered architecture** with clear separation of concerns
 │  │ Controller  │  │  Listener   │  │  (WorkflowEngine)       │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
+                                │
+                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      WorkflowExecutor                           │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
@@ -331,12 +331,12 @@ The library follows a **layered architecture** with clear separation of concerns
 │  │  (Res4j)    │  │   (OTel)    │  │     (Micrometer)        │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
+                                │
+                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Infrastructure Layer                        │
 │  ┌─────────────────────┐      ┌─────────────────────────────┐   │
-│  │   lib-common-cache  │      │      lib-common-eda         │   │
+│  │   fireflyframework-cache  │      │      fireflyframework-eda         │   │
 │  │   (Redis/Caffeine)  │      │   (Kafka/RabbitMQ/SNS)      │   │
 │  └─────────────────────┘      └─────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
@@ -354,7 +354,7 @@ The `WorkflowEngine` class serves as the **main facade** for all workflow operat
 | **WorkflowEventListener** | Listens for domain events and triggers workflows/steps |
 | **WorkflowEngine (direct)** | Programmatic API for service-to-service calls |
 
-This design enables **multiple trigger mechanisms** while keeping the core logic centralized. The `WorkflowEventListener` is the key enabler for event-driven choreography—it receives events from `lib-common-eda`, matches them to workflow `triggerEventType` or step `inputEventType` annotations, and initiates execution.
+This design enables **multiple trigger mechanisms** while keeping the core logic centralized. The `WorkflowEventListener` is the key enabler for event-driven choreography—it receives events from `fireflyframework-eda`, matches them to workflow `triggerEventType` or step `inputEventType` annotations, and initiates execution.
 
 #### Execution Layer: WorkflowExecutor + Cross-Cutting Concerns
 
@@ -375,8 +375,8 @@ The infrastructure layer uses **Firefly's shared libraries** to abstract away sp
 
 | Library | Purpose | Why This Choice |
 |---------|---------|-----------------|
-| **lib-common-cache** | State persistence via `CacheAdapter` interface | Provides a unified API for Redis (distributed) or Caffeine (in-memory). Workflows can run in clustered environments with Redis, or locally with Caffeine for development/testing. |
-| **lib-common-eda** | Event publishing via `EventPublisherFactory` | Abstracts Kafka, RabbitMQ, and SNS behind a common interface. Workflows can emit events to any message broker without code changes. |
+| **fireflyframework-cache** | State persistence via `CacheAdapter` interface | Provides a unified API for Redis (distributed) or Caffeine (in-memory). Workflows can run in clustered environments with Redis, or locally with Caffeine for development/testing. |
+| **fireflyframework-eda** | Event publishing via `EventPublisherFactory` | Abstracts Kafka, RabbitMQ, and SNS behind a common interface. Workflows can emit events to any message broker without code changes. |
 
 **State Persistence Design**: The `CacheWorkflowStateStore` and `CacheStepStateStore` use a key-based pattern with indices for efficient querying:
 - Instance data: `workflow:instance:{instanceId}`
@@ -422,19 +422,70 @@ Each step can independently listen for events (`inputEventType`) and emit events
 
 For detailed architecture diagrams and sequence flows, see the [Architecture Documentation](docs/architecture.md).
 
-## 📦 Dependencies
+## Plugin Architecture Integration
+
+Workflow definitions can be exposed as **ProcessPlugins** for use within the Firefly Plugin Architecture. This enables workflow-backed business processes to be dynamically resolved and executed via the `ProcessPluginExecutor`.
+
+### How It Works
+
+When `fireflyframework-application` is on the classpath, the `WorkflowPluginLoader` automatically:
+1. Discovers all registered workflow definitions
+2. Creates `WorkflowProcessPlugin` adapters for each
+3. Registers them with the `ProcessPluginRegistry`
+
+### Creating a Workflow-Backed Plugin
+
+```java
+// Define a workflow with plugin exposure metadata
+WorkflowDefinition workflow = WorkflowDefinition.builder()
+    .workflowId("account-creation-workflow")
+    .name("Account Creation Workflow")
+    .metadata(Map.of("exposeAsPlugin", true))  // Expose as plugin
+    .addStep(...)
+    .build();
+
+// Or explicitly create a WorkflowProcessPlugin
+WorkflowProcessPlugin plugin = WorkflowProcessPlugin.builder()
+    .workflowDefinition(workflow)
+    .workflowEngine(workflowEngine)
+    .processId("createAccount")  // ProcessPlugin ID
+    .version("1.0.0")
+    .build();
+```
+
+### Configuration
+
+```yaml
+firefly:
+  workflow:
+    plugin:
+      enabled: true
+      priority: 5  # Loader priority (lower = higher priority)
+      process-id-prefix: ""  # Optional prefix for process IDs
+```
+
+### Context Mapping
+
+The `WorkflowProcessPlugin` maps `ProcessExecutionContext` to workflow input:
+- `_appContext` - The ApplicationExecutionContext
+- `_partyId`, `_tenantId`, `_contractId`, `_productId` - From AppContext
+- All input map entries passed directly to workflow
+
+For more details, see the [Plugin Architecture Documentation](../fireflyframework-application/README.md#plugin-architecture).
+
+##  Dependencies
 
 | Dependency | Purpose |
 |------------|---------|
-| `lib-common-cache` | State persistence (Redis or Caffeine) |
-| `lib-common-eda` | Event publishing/listening (Kafka, RabbitMQ, SNS) |
+| `fireflyframework-cache` | State persistence (Redis or Caffeine) |
+| `fireflyframework-eda` | Event publishing/listening (Kafka, RabbitMQ, SNS) |
 | Spring Boot 3.x | Application framework |
 | Spring WebFlux | Reactive web support |
 | Project Reactor | Reactive programming |
 | Resilience4j | Circuit breaker, rate limiter, bulkhead |
 | Micrometer | Metrics and tracing |
 
-## 🤝 Contributing
+##  Contributing
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
@@ -442,6 +493,6 @@ For detailed architecture diagrams and sequence flows, see the [Architecture Doc
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📄 License
+##  License
 
-Copyright 2025 Firefly Software Solutions Inc. Licensed under the [Apache License 2.0](LICENSE).
+Copyright 2024-2026 Firefly Software Solutions Inc. Licensed under the [Apache License 2.0](LICENSE).

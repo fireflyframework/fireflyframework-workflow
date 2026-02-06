@@ -16,8 +16,8 @@ Add the dependency to your `pom.xml`:
 
 ```xml
 <dependency>
-    <groupId>com.firefly</groupId>
-    <artifactId>lib-workflow-engine</artifactId>
+    <groupId>org.fireflyframework</groupId>
+    <artifactId>fireflyframework-workflow-engine</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 ```
@@ -31,10 +31,10 @@ Create a workflow class annotated with `@Workflow`:
 ```java
 package com.example.workflows;
 
-import com.firefly.common.workflow.annotation.Workflow;
-import com.firefly.common.workflow.annotation.WorkflowStep;
-import com.firefly.common.workflow.core.WorkflowContext;
-import com.firefly.common.workflow.model.TriggerMode;
+import org.fireflyframework.workflow.annotation.Workflow;
+import org.fireflyframework.workflow.annotation.WorkflowStep;
+import org.fireflyframework.workflow.core.WorkflowContext;
+import org.fireflyframework.workflow.model.TriggerMode;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
@@ -94,7 +94,7 @@ firefly:
       default-destination: workflow-events
       publish-step-events: true
 
-  # lib-common-eda configuration for Kafka
+  # fireflyframework-eda configuration for Kafka
   eda:
     publishers:
       kafka:
@@ -108,10 +108,10 @@ firefly:
 ```java
 package com.example.workflows;
 
-import com.firefly.common.workflow.annotation.Workflow;
-import com.firefly.common.workflow.annotation.WorkflowStep;
-import com.firefly.common.workflow.core.WorkflowContext;
-import com.firefly.common.workflow.model.TriggerMode;
+import org.fireflyframework.workflow.annotation.Workflow;
+import org.fireflyframework.workflow.annotation.WorkflowStep;
+import org.fireflyframework.workflow.core.WorkflowContext;
+import org.fireflyframework.workflow.model.TriggerMode;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
@@ -193,7 +193,7 @@ public class OrderProcessingWorkflow {
 
 ### Trigger the Workflow via Event
 
-Publish an event to trigger the workflow using `lib-common-eda`:
+Publish an event to trigger the workflow using `fireflyframework-eda`:
 
 ```java
 @Service
