@@ -59,7 +59,7 @@ Built-in REST controllers expose workflow management endpoints for starting, sus
 <dependency>
     <groupId>org.fireflyframework</groupId>
     <artifactId>fireflyframework-workflow</artifactId>
-    <version>26.01.01</version>
+    <version>26.02.01</version>
 </dependency>
 ```
 
