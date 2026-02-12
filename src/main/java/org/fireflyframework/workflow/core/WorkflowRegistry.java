@@ -18,7 +18,6 @@ package org.fireflyframework.workflow.core;
 
 import org.fireflyframework.workflow.model.WorkflowDefinition;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,7 +31,6 @@ import java.util.stream.Collectors;
  * provides lookup functionality by ID and trigger event type.
  */
 @Slf4j
-@Component
 public class WorkflowRegistry {
 
     private final Map<String, WorkflowDefinition> workflows = new ConcurrentHashMap<>();
