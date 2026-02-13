@@ -362,9 +362,11 @@ public class WorkflowEngine {
                     
                     log.info("WORKFLOW_RESUME: workflowId={}, instanceId={}",
                             workflowId, instanceId);
-                    
-                    WorkflowDefinition definition = registry.get(workflowId)
-                            .orElseThrow(() -> new WorkflowNotFoundException(workflowId));
+
+                    // Use the definition version the instance was started with
+                    WorkflowDefinition definition = registry.get(workflowId, instance.workflowVersion())
+                            .orElseGet(() -> registry.get(workflowId)
+                                    .orElseThrow(() -> new WorkflowNotFoundException(workflowId)));
                     
                     WorkflowInstance resumed = instance.resume();
                     return stateStore.save(resumed)
@@ -520,9 +522,11 @@ public class WorkflowEngine {
                         return Mono.error(new IllegalStateException(
                                 "Can only retry failed workflows: status=" + instance.status()));
                     }
-                    
-                    WorkflowDefinition definition = registry.get(workflowId)
-                            .orElseThrow(() -> new WorkflowNotFoundException(workflowId));
+
+                    // Use the definition version the instance was started with, not the latest
+                    WorkflowDefinition definition = registry.get(workflowId, instance.workflowVersion())
+                            .orElseGet(() -> registry.get(workflowId)
+                                    .orElseThrow(() -> new WorkflowNotFoundException(workflowId)));
                     
                     // Find the failed step
                     String failedStepId = instance.currentStepId();

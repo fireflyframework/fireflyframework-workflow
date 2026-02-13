@@ -15,6 +15,13 @@
     <description>Workflow orchestration library with AOP-based workflow definitions, state persistence, and event-driven execution</description>
 
     <dependencies>
+        <!-- Firefly Kernel (exception hierarchy, shared abstractions) -->
+        <dependency>
+            <groupId>org.fireflyframework</groupId>
+            <artifactId>fireflyframework-kernel</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Firefly Libraries -->
         <dependency>
             <groupId>org.fireflyframework</groupId>

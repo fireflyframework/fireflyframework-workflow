@@ -273,4 +273,22 @@ public class WorkflowEngineAutoConfiguration {
         log.info("Creating DeadLetterController REST API");
         return new DeadLetterController(deadLetterService);
     }
+
+    /**
+     * Workflow Recovery Service — recovers stale workflows after application restart.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "firefly.workflow.recovery", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public org.fireflyframework.workflow.recovery.WorkflowRecoveryService workflowRecoveryService(
+            WorkflowStateStore stateStore,
+            WorkflowEngine workflowEngine,
+            WorkflowProperties properties) {
+        log.info("Creating WorkflowRecoveryService with staleThreshold: {}",
+                properties.getRecovery().getStaleThreshold());
+        return new org.fireflyframework.workflow.recovery.WorkflowRecoveryService(
+                stateStore, workflowEngine,
+                properties.getRecovery().isEnabled(),
+                properties.getRecovery().getStaleThreshold());
+    }
 }

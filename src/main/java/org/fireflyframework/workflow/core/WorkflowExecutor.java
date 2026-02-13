@@ -124,11 +124,25 @@ public class WorkflowExecutor {
                     WorkflowTopology topology = getOrCreateTopology(definition);
                     List<List<WorkflowStepDefinition>> layers = topology.buildExecutionLayers();
 
-                    log.debug("Executing workflow {} with {} layers",
-                            definition.workflowId(), layers.size());
+                    log.debug("Executing workflow {} with {} layers, timeout={}",
+                            definition.workflowId(), layers.size(), definition.timeout());
 
-                    // Execute layers sequentially
-                    return executeLayersSequentially(definition, instance, layers, 0, "workflow");
+                    // Execute layers sequentially with workflow-level timeout
+                    Mono<WorkflowInstance> execution = executeLayersSequentially(
+                            definition, instance, layers, 0, "workflow");
+
+                    if (definition.timeout() != null) {
+                        execution = execution.timeout(definition.timeout())
+                                .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
+                                    log.error("Workflow {} timed out after {}",
+                                            definition.workflowId(), definition.timeout());
+                                    WorkflowInstance timedOut = instance.timeout();
+                                    return saveAndPublish(timedOut, () ->
+                                            eventPublisher.publishWorkflowFailed(timedOut));
+                                });
+                    }
+
+                    return execution;
                 }));
     }
 
@@ -321,21 +335,29 @@ public class WorkflowExecutor {
         log.info("Executing {} steps in parallel for workflow {}",
                 steps.size(), definition.workflowId());
 
-        // Execute all steps in parallel and collect results
+        // Execute all steps in parallel, collecting only StepExecution results (not full instances)
+        // to avoid the race condition where parallel steps computed from the same base instance
+        // would lose each other's context updates.
         return Flux.fromIterable(steps)
                 .flatMap(step -> executeStepWithTracking(definition, instance, step, triggeredBy)
                         .map(result -> Map.entry(step.stepId(), result)))
                 .collectList()
                 .map(results -> {
-                    // Merge all step executions into a single instance
+                    // Atomically merge all step executions and context from parallel results
                     WorkflowInstance merged = instance;
+                    Map<String, Object> mergedContext = new HashMap<>(instance.context());
                     for (Map.Entry<String, WorkflowInstance> entry : results) {
                         WorkflowInstance stepResult = entry.getValue();
-                        // Get the step execution from the result
-                        stepResult.getStepExecution(entry.getKey())
-                                .ifPresent(exec -> merged.withStepExecution(exec));
+                        // Merge step execution
+                        Optional<StepExecution> exec = stepResult.getStepExecution(entry.getKey());
+                        if (exec.isPresent()) {
+                            merged = merged.withStepExecution(exec.get());
+                        }
+                        // Merge any context updates from this parallel step
+                        mergedContext.putAll(stepResult.context());
                     }
-                    return merged;
+                    // Apply merged context
+                    return merged.withContext(mergedContext);
                 });
     }
 

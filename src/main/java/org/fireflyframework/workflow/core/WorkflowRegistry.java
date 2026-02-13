@@ -33,6 +33,9 @@ import java.util.stream.Collectors;
 @Slf4j
 public class WorkflowRegistry {
 
+    // Versioned storage: workflowId -> (version -> definition)
+    private final Map<String, Map<String, WorkflowDefinition>> versionedWorkflows = new ConcurrentHashMap<>();
+    // Latest version index: workflowId -> definition (backwards compatible)
     private final Map<String, WorkflowDefinition> workflows = new ConcurrentHashMap<>();
     private final Map<String, Pattern> triggerPatterns = new ConcurrentHashMap<>();
 
@@ -47,14 +50,19 @@ public class WorkflowRegistry {
      */
     public void register(WorkflowDefinition workflow) {
         String id = workflow.workflowId();
+        String version = workflow.version();
 
         // Validate topology before registration
         validateTopology(workflow);
 
         if (workflows.containsKey(id)) {
-            log.warn("Overwriting existing workflow definition: {}", id);
+            log.info("Registering new version of workflow: id={}, version={}", id, version);
         }
 
+        // Store in versioned map
+        versionedWorkflows.computeIfAbsent(id, k -> new ConcurrentHashMap<>()).put(version, workflow);
+
+        // Update latest version index
         workflows.put(id, workflow);
 
         // Register trigger pattern if present
@@ -63,7 +71,7 @@ public class WorkflowRegistry {
         }
 
         log.info("Registered workflow: id={}, name={}, version={}, triggerMode={}, steps={}",
-                id, workflow.name(), workflow.version(), workflow.triggerMode(),
+                id, workflow.name(), version, workflow.triggerMode(),
                 workflow.steps().size());
     }
 
@@ -94,22 +102,45 @@ public class WorkflowRegistry {
     public boolean unregister(String workflowId) {
         WorkflowDefinition removed = workflows.remove(workflowId);
         triggerPatterns.remove(workflowId);
-        
+        // Keep versioned entries so running instances can still resolve their version
+        // Only remove from the latest-version index
+
         if (removed != null) {
-            log.info("Unregistered workflow: {}", workflowId);
+            log.info("Unregistered latest version of workflow: {} (version history retained)", workflowId);
             return true;
         }
         return false;
     }
 
     /**
-     * Gets a workflow definition by ID.
+     * Gets the latest workflow definition by ID.
      *
      * @param workflowId the workflow ID
-     * @return optional containing the workflow if found
+     * @return optional containing the latest workflow version if found
      */
     public Optional<WorkflowDefinition> get(String workflowId) {
         return Optional.ofNullable(workflows.get(workflowId));
+    }
+
+    /**
+     * Gets a specific version of a workflow definition.
+     * <p>
+     * This is important for running instances that must use the definition version
+     * they were started with, not the latest registered version.
+     *
+     * @param workflowId the workflow ID
+     * @param version the specific version string (e.g., "1.0.0")
+     * @return optional containing the workflow for that version, or empty if not found
+     */
+    public Optional<WorkflowDefinition> get(String workflowId, String version) {
+        if (version == null) {
+            return get(workflowId);
+        }
+        Map<String, WorkflowDefinition> versions = versionedWorkflows.get(workflowId);
+        if (versions == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(versions.get(version));
     }
 
     /**
@@ -194,6 +225,7 @@ public class WorkflowRegistry {
      */
     public void clear() {
         workflows.clear();
+        versionedWorkflows.clear();
         triggerPatterns.clear();
         log.info("Cleared all workflow registrations");
     }

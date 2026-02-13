@@ -66,6 +66,18 @@ public class WorkflowScheduler {
         }
 
         log.info("Initializing WorkflowScheduler...");
+
+        // Warn about multi-instance risk when no distributed lock is configured
+        if (!isDistributedLockAvailable()) {
+            log.warn("=========================================================================");
+            log.warn("WorkflowScheduler is using a LOCAL TaskScheduler without distributed");
+            log.warn("locking. In a multi-instance deployment, scheduled workflows will execute");
+            log.warn("on ALL instances simultaneously. Consider adding ShedLock with a");
+            log.warn("distributed lock provider (Redis, JDBC) to prevent duplicate executions.");
+            log.warn("See: https://github.com/lukas-krecan/ShedLock");
+            log.warn("=========================================================================");
+        }
+
         scanAndRegisterScheduledWorkflows();
         log.info("WorkflowScheduler initialized with {} scheduled workflows", registeredSchedules.size());
     }
@@ -232,6 +244,18 @@ public class WorkflowScheduler {
         } catch (Exception e) {
             log.warn("Failed to parse schedule input JSON: {}", inputJson, e);
             return new HashMap<>();
+        }
+    }
+
+    /**
+     * Checks if a distributed lock provider (e.g. ShedLock) is available on the classpath.
+     */
+    private boolean isDistributedLockAvailable() {
+        try {
+            Class.forName("net.javacrumbs.shedlock.core.LockProvider");
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
         }
     }
 

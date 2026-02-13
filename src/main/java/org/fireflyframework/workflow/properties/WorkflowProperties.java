@@ -111,6 +111,13 @@ public class WorkflowProperties {
     private DlqConfig dlq = new DlqConfig();
 
     /**
+     * Crash recovery configuration.
+     */
+    @Valid
+    @NotNull
+    private RecoveryConfig recovery = new RecoveryConfig();
+
+    /**
      * State persistence configuration.
      */
     @Data
@@ -501,5 +508,23 @@ public class WorkflowProperties {
          * Whether to include full stack traces in DLQ entries.
          */
         private boolean includeStackTrace = true;
+    }
+
+    /**
+     * Configuration for crash recovery of stale workflow instances.
+     */
+    @Data
+    public static class RecoveryConfig {
+
+        /**
+         * Whether crash recovery is enabled.
+         */
+        private boolean enabled = true;
+
+        /**
+         * How long a RUNNING instance must be stale (no updates) before recovery.
+         */
+        @NotNull
+        private Duration staleThreshold = Duration.ofMinutes(5);
     }
 }
