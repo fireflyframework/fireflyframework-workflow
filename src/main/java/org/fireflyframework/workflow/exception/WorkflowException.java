@@ -16,10 +16,12 @@
 
 package org.fireflyframework.workflow.exception;
 
+import org.fireflyframework.kernel.exception.FireflyException;
+
 /**
  * Base exception for all workflow-related errors.
  */
-public class WorkflowException extends RuntimeException {
+public class WorkflowException extends FireflyException {
 
     public WorkflowException(String message) {
         super(message);

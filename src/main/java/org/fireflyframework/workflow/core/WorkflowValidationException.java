@@ -16,6 +16,8 @@
 
 package org.fireflyframework.workflow.core;
 
+import org.fireflyframework.workflow.exception.WorkflowException;
+
 /**
  * Exception thrown when workflow validation fails.
  * <p>
@@ -27,7 +29,7 @@ package org.fireflyframework.workflow.core;
  *   <li>Other validation errors</li>
  * </ul>
  */
-public class WorkflowValidationException extends RuntimeException {
+public class WorkflowValidationException extends WorkflowException {
 
     /**
      * Creates a new validation exception with the given message.

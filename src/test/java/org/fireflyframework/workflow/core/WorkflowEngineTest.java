@@ -188,7 +188,7 @@ class WorkflowEngineTest {
                 null, null, null
         );
         
-        when(registry.get("test-workflow")).thenReturn(Optional.of(definition));
+        when(registry.get("test-workflow", "1.0.0")).thenReturn(Optional.of(definition));
         when(stateStore.findByWorkflowAndInstanceId("test-workflow", "instance-1"))
                 .thenReturn(Mono.just(failed));
         when(stateStore.save(any(WorkflowInstance.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));

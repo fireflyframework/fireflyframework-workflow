@@ -41,13 +41,38 @@ public class CacheDeadLetterStore implements DeadLetterStore {
     private final CacheAdapter cacheAdapter;
     private final Duration ttl;
 
-    // In-memory index for fast lookups (synchronized with cache)
+    // Local cache of entry IDs, hydrated from the cache-backed index on startup
     private final Set<String> entryIds = ConcurrentHashMap.newKeySet();
 
     public CacheDeadLetterStore(CacheAdapter cacheAdapter, WorkflowProperties properties) {
         this.cacheAdapter = cacheAdapter;
         this.ttl = properties.getDlq().getRetentionPeriod();
         log.info("CacheDeadLetterStore initialized with TTL: {}", ttl);
+        // Load persisted index from cache
+        loadPersistedIndex();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void loadPersistedIndex() {
+        try {
+            cacheAdapter.get(DLQ_INDEX_KEY, Set.class)
+                    .doOnNext(opt -> {
+                        if (opt.isPresent()) {
+                            Set<String> persisted = (Set<String>) opt.get();
+                            entryIds.addAll(persisted);
+                            log.info("Loaded {} DLQ entry IDs from persisted index", persisted.size());
+                        }
+                    })
+                    .subscribe();
+        } catch (Exception e) {
+            log.warn("Failed to load persisted DLQ index: {}", e.getMessage());
+        }
+    }
+
+    private void persistIndex() {
+        cacheAdapter.put(DLQ_INDEX_KEY, new java.util.HashSet<>(entryIds), ttl)
+                .doOnError(e -> log.warn("Failed to persist DLQ index: {}", e.getMessage()))
+                .subscribe();
     }
 
     @Override
@@ -56,6 +81,7 @@ public class CacheDeadLetterStore implements DeadLetterStore {
         return cacheAdapter.put(key, entry, ttl)
                 .doOnSuccess(v -> {
                     entryIds.add(entry.id());
+                    persistIndex();
                     log.debug("Saved DLQ entry: id={}, workflowId={}, stepId={}",
                             entry.id(), entry.workflowId(), entry.stepId());
                 })
@@ -112,6 +138,7 @@ public class CacheDeadLetterStore implements DeadLetterStore {
                 .doOnSuccess(deleted -> {
                     if (deleted) {
                         entryIds.remove(id);
+                        persistIndex();
                         log.debug("Deleted DLQ entry: id={}", id);
                     }
                 });
@@ -131,6 +158,7 @@ public class CacheDeadLetterStore implements DeadLetterStore {
                 .reduce(0L, Long::sum)
                 .doOnSuccess(count -> {
                     entryIds.clear();
+                    persistIndex();
                     log.info("Deleted {} DLQ entries", count);
                 });
     }
