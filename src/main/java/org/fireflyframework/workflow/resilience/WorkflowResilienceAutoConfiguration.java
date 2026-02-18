@@ -50,6 +50,7 @@ public class WorkflowResilienceAutoConfiguration {
     /**
      * Binds Resilience4j metrics to Micrometer.
      */
+    @ConditionalOnMissingBean
     @Bean
     @ConditionalOnClass(MeterBinder.class)
     @ConditionalOnProperty(prefix = "firefly.workflow", name = "metrics-enabled", havingValue = "true", matchIfMissing = true)
