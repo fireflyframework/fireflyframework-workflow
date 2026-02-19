@@ -20,6 +20,7 @@ import org.fireflyframework.workflow.exception.StepExecutionException;
 import org.fireflyframework.workflow.exception.WorkflowNotFoundException;
 import org.fireflyframework.workflow.model.WorkflowDefinition;
 import org.fireflyframework.workflow.model.WorkflowStatus;
+import org.fireflyframework.workflow.query.WorkflowQueryService;
 import org.fireflyframework.workflow.rest.dto.SendSignalRequest;
 import org.fireflyframework.workflow.rest.dto.StartWorkflowRequest;
 import org.fireflyframework.workflow.rest.dto.StepStateResponse;
@@ -71,10 +72,15 @@ public class WorkflowController {
     private final WorkflowService workflowService;
     @Nullable
     private final SignalService signalService;
+    @Nullable
+    private final WorkflowQueryService queryService;
 
-    public WorkflowController(WorkflowService workflowService, @Nullable SignalService signalService) {
+    public WorkflowController(WorkflowService workflowService,
+                              @Nullable SignalService signalService,
+                              @Nullable WorkflowQueryService queryService) {
         this.workflowService = workflowService;
         this.signalService = signalService;
+        this.queryService = queryService;
     }
 
     /**
@@ -394,6 +400,41 @@ public class WorkflowController {
                 .map(ResponseEntity::ok)
                 .onErrorResume(WorkflowNotFoundException.class, e ->
                         Mono.just(ResponseEntity.notFound().build()));
+    }
+
+    // ==================== Query Endpoints ====================
+
+    /**
+     * Executes a built-in query against a workflow instance.
+     * <p>
+     * Queries allow external systems to inspect the internal state of a running
+     * workflow without affecting its execution. Supported queries include:
+     * getStatus, getCurrentStep, getStepHistory, getContext, getSearchAttributes,
+     * getInput, getOutput, getPendingSignals, getActiveTimers, getChildWorkflows.
+     * <p>
+     * Requires the event-sourced query service to be configured.
+     */
+    @GetMapping("/{workflowId}/instances/{instanceId}/query/{queryName}")
+    public Mono<ResponseEntity<Object>> executeQuery(
+            @PathVariable String workflowId,
+            @PathVariable String instanceId,
+            @PathVariable String queryName) {
+
+        if (queryService == null) {
+            log.warn("Query endpoint called but WorkflowQueryService is not configured");
+            return Mono.just(ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build());
+        }
+
+        log.info("Executing query via API: workflowId={}, instanceId={}, queryName={}",
+                workflowId, instanceId, queryName);
+
+        return queryService.executeQuery(instanceId, queryName)
+                .map(result -> ResponseEntity.ok((Object) result))
+                .onErrorResume(WorkflowNotFoundException.class, e ->
+                        Mono.just(ResponseEntity.notFound().build()))
+                .onErrorResume(IllegalArgumentException.class, e ->
+                        Mono.just(ResponseEntity.badRequest().body(
+                                Map.of("error", e.getMessage()))));
     }
 
     // ==================== Private Helper Methods ====================

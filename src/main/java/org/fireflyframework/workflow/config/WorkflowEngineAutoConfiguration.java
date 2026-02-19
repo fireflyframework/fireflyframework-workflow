@@ -30,6 +30,7 @@ import org.fireflyframework.workflow.dlq.CacheDeadLetterStore;
 import org.fireflyframework.workflow.dlq.DeadLetterService;
 import org.fireflyframework.workflow.dlq.DeadLetterStore;
 import org.fireflyframework.workflow.rest.DeadLetterController;
+import org.fireflyframework.workflow.query.WorkflowQueryService;
 import org.fireflyframework.workflow.rest.WorkflowController;
 import org.fireflyframework.workflow.scheduling.WorkflowScheduler;
 import org.fireflyframework.workflow.service.WorkflowService;
@@ -185,9 +186,11 @@ public class WorkflowEngineAutoConfiguration {
     @ConditionalOnProperty(prefix = "firefly.workflow.api", name = "enabled", havingValue = "true", matchIfMissing = true)
     public WorkflowController workflowController(
             WorkflowService workflowService,
-            @Nullable SignalService signalService) {
-        log.info("Creating WorkflowController REST API (signalService: {})", signalService != null);
-        return new WorkflowController(workflowService, signalService);
+            @Nullable SignalService signalService,
+            @Nullable WorkflowQueryService queryService) {
+        log.info("Creating WorkflowController REST API (signalService: {}, queryService: {})",
+                signalService != null, queryService != null);
+        return new WorkflowController(workflowService, signalService, queryService);
     }
 
     /**
