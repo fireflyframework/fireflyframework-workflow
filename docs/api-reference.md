@@ -534,6 +534,164 @@ GET /api/v1/workflows/dlq/count?workflowId=order-processing
 
 ---
 
+## Durable Execution Endpoints
+
+The following endpoints are available when durable execution is enabled (`firefly.workflow.eventsourcing.enabled: true`).
+
+### Send Signal
+
+Sends a named signal to a running workflow instance. If no step is currently waiting for this signal, it is buffered for later consumption.
+
+```http
+POST /api/v1/workflows/{workflowId}/instances/{instanceId}/signal
+Content-Type: application/json
+
+{
+  "signalName": "approval-received",
+  "payload": {
+    "approvedBy": "manager@company.com",
+    "approved": true
+  }
+}
+```
+
+**Request Body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `signalName` | string | Yes | Name of the signal (must match `@WaitForSignal` name) |
+| `payload` | object | No | Data to deliver with the signal |
+
+**Response (200 OK):**
+
+```json
+{
+  "instanceId": "inst-789",
+  "workflowId": "order-processing",
+  "signalName": "approval-received",
+  "delivered": true,
+  "buffered": false
+}
+```
+
+If the signal is buffered (no step currently waiting):
+
+```json
+{
+  "instanceId": "inst-789",
+  "workflowId": "order-processing",
+  "signalName": "approval-received",
+  "delivered": false,
+  "buffered": true
+}
+```
+
+### Execute Query
+
+Executes a named query against a running workflow instance. Queries are read-only and do not modify workflow state.
+
+```http
+GET /api/v1/workflows/{workflowId}/instances/{instanceId}/query/{queryName}
+```
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `workflowId` | string | Workflow definition ID |
+| `instanceId` | string | Workflow instance ID |
+| `queryName` | string | Name of the query (built-in or custom `@WorkflowQuery` name) |
+
+**Built-in Query Names:**
+
+| Query Name | Description |
+|------------|-------------|
+| `getStatus` | Current workflow status |
+| `getCurrentStep` | Currently executing step |
+| `getStepHistory` | All step execution records |
+| `getContext` | Workflow context data |
+| `getSearchAttributes` | Current search attribute values |
+
+**Response (200 OK) - Example for custom query `orderSummary`:**
+
+```json
+{
+  "orderId": "ORD-123",
+  "status": "PROCESSING",
+  "itemCount": 5,
+  "totalAmount": 299.99
+}
+```
+
+**Response (200 OK) - Example for built-in query `getStepHistory`:**
+
+```json
+[
+  {
+    "stepId": "validate",
+    "status": "COMPLETED",
+    "startedAt": "2025-01-15T10:30:00Z",
+    "completedAt": "2025-01-15T10:30:01Z",
+    "attemptNumber": 1
+  },
+  {
+    "stepId": "process-payment",
+    "status": "RUNNING",
+    "startedAt": "2025-01-15T10:30:01Z",
+    "attemptNumber": 1
+  }
+]
+```
+
+### Search by Attributes
+
+Searches workflow instances by custom search attribute values. Requires `search-attributes.enabled: true`.
+
+```http
+GET /api/v1/workflows/search?customerId=CUST-123&region=us-east
+```
+
+**Query Parameters:**
+
+Any key-value pairs matching search attribute names and values. Multiple parameters are combined with AND logic.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `{attributeKey}` | string | Search attribute key and value to filter by |
+| `workflowId` | string | (Optional) Filter by workflow definition ID |
+| `status` | string | (Optional) Filter by workflow status |
+
+**Response (200 OK):**
+
+```json
+[
+  {
+    "instanceId": "inst-789",
+    "workflowId": "order-processing",
+    "status": "RUNNING",
+    "searchAttributes": {
+      "customerId": "CUST-123",
+      "region": "us-east",
+      "orderStatus": "PROCESSING"
+    },
+    "createdAt": "2025-01-15T10:30:00Z"
+  },
+  {
+    "instanceId": "inst-790",
+    "workflowId": "order-processing",
+    "status": "COMPLETED",
+    "searchAttributes": {
+      "customerId": "CUST-123",
+      "region": "us-east",
+      "orderStatus": "SHIPPED"
+    },
+    "createdAt": "2025-01-15T09:15:00Z"
+  }
+]
+```
+
+---
+
 ## Status Codes
 
 | Code | Description |

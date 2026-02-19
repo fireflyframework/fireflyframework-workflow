@@ -913,6 +913,460 @@ Mono<WorkflowTopologyResponse> instanceTopology =
     workflowService.getTopology("order-processing", instanceId);
 ```
 
+## Durable Execution Features
+
+The following features require event sourcing to be enabled (`firefly.workflow.eventsourcing.enabled: true`). They provide Temporal.io-like durable execution capabilities for long-running business processes.
+
+### Signals
+
+Signals allow external systems to send named data to running workflow instances. Steps can block until a signal arrives, and signals are buffered if they arrive before any step waits for them.
+
+#### Sending a Signal
+
+Via REST API:
+
+```bash
+POST /api/v1/workflows/order-processing/instances/inst-789/signal
+Content-Type: application/json
+
+{
+  "signalName": "approval-received",
+  "payload": {
+    "approvedBy": "manager@company.com",
+    "approved": true
+  }
+}
+```
+
+Or programmatically:
+
+```java
+workflowEngine.signal(
+    "order-processing",
+    instanceId,
+    "approval-received",
+    Map.of("approvedBy", "manager@company.com", "approved", true)
+);
+```
+
+#### Waiting for a Signal in a Step
+
+Use the `@WaitForSignal` annotation to pause a step until a named signal arrives:
+
+```java
+@WorkflowStep(id = "wait-for-approval", dependsOn = {"submit-request"})
+@WaitForSignal(name = "approval-received", timeoutDuration = "P7D", timeoutAction = FAIL)
+public Mono<Map<String, Object>> waitForApproval(WorkflowContext ctx) {
+    Map<String, Object> signal = ctx.getSignal("approval-received");
+    boolean approved = (boolean) signal.get("approved");
+    return Mono.just(Map.of("approved", approved));
+}
+```
+
+#### Signal Buffering
+
+If a signal arrives before any step waits for it, the signal is stored in the `pendingSignals` buffer. When a step declares a wait, the buffer is checked first. Configure the buffer size:
+
+```yaml
+firefly:
+  workflow:
+    signals:
+      enabled: true
+      buffer-size: 100
+```
+
+#### Signal with Timeout
+
+Combine a signal wait with a timeout for escalation patterns:
+
+```java
+@WorkflowStep(id = "wait-for-payment")
+@WaitForSignal(
+    name = "payment-confirmed",
+    timeoutDuration = "PT24H",
+    timeoutAction = ESCALATE  // or FAIL, SKIP, CONTINUE
+)
+public Mono<Map<String, Object>> waitForPayment(WorkflowContext ctx) {
+    if (ctx.isTimedOut()) {
+        return Mono.just(Map.of("escalated", true));
+    }
+    return Mono.just(ctx.getSignal("payment-confirmed"));
+}
+```
+
+### Durable Timers
+
+Per-instance timers that survive process restarts. Timer state is persisted as domain events and a materialized projection is polled by the `TimerSchedulerService`.
+
+#### Timer Types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| Duration-based | Fire after a relative duration | "fire in 7 days" |
+| Absolute | Fire at a specific instant | "fire at 2026-03-01T09:00:00Z" |
+| Recurring | Re-registers after each fire | "fire every hour" |
+
+#### Using Timers in Steps
+
+```java
+@WorkflowStep(id = "schedule-reminder", dependsOn = {"create-order"})
+public Mono<Map<String, Object>> scheduleReminder(WorkflowContext ctx) {
+    // Duration-based timer
+    ctx.registerTimer("payment-reminder", Duration.ofDays(3));
+
+    // Absolute timer
+    ctx.registerTimer("deadline", Instant.parse("2026-03-01T09:00:00Z"));
+
+    return Mono.just(Map.of("reminderScheduled", true));
+}
+
+@WorkflowStep(id = "handle-reminder")
+@WaitForTimer("payment-reminder")
+public Mono<Map<String, Object>> handleReminder(WorkflowContext ctx) {
+    return notificationService.sendReminder(ctx.getInput("email", String.class))
+        .map(result -> Map.of("reminderSent", true));
+}
+```
+
+#### Timer Configuration
+
+```yaml
+firefly:
+  workflow:
+    timers:
+      enabled: true
+      poll-interval: PT1S   # How often to check for due timers
+      batch-size: 50         # Max timers to fire per poll cycle
+```
+
+### Child Workflows
+
+Parent workflows can spawn child workflows, wait for their completion, and use their results. Child workflows are separate `WorkflowAggregate` instances with their own event history.
+
+#### Using @ChildWorkflow
+
+```java
+@WorkflowStep(id = "process-items", dependsOn = {"validate-order"})
+@ChildWorkflow(workflowId = "item-processing", waitForCompletion = true)
+public Mono<Map<String, Object>> processItems(WorkflowContext ctx) {
+    List<String> itemIds = ctx.getInput("itemIds", List.class);
+
+    // Spawn child workflows for each item
+    List<Mono<Object>> children = itemIds.stream()
+        .map(itemId -> ctx.spawnChildWorkflow(
+            "item-processing",
+            Map.of("itemId", itemId)
+        ))
+        .toList();
+
+    return Flux.merge(children)
+        .collectList()
+        .map(results -> Map.of("processedItems", results));
+}
+```
+
+#### Parent-Child Lifecycle
+
+- Parent records `ChildWorkflowSpawnedEvent` when spawning a child
+- Child is a separate `WorkflowAggregate` with its own event history
+- On child completion, the engine calls `parent.completeChildWorkflow()`
+- **Cascading cancellation**: Cancelling the parent automatically cancels all active children
+- **Child failure handling**: Configurable to fail parent, retry child, or trigger compensation
+
+#### Nesting Depth Limit
+
+To prevent runaway recursion, child workflows have a configurable maximum nesting depth:
+
+```yaml
+firefly:
+  workflow:
+    child-workflows:
+      enabled: true
+      max-depth: 5
+```
+
+### Continue-As-New
+
+Long-running workflows accumulate events over time. `Continue-As-New` resets the event history by completing the current aggregate and starting a new one with the same workflow identity.
+
+#### Manual Continue-As-New
+
+```java
+@WorkflowStep(id = "check-and-continue")
+public Mono<Map<String, Object>> checkAndContinue(WorkflowContext ctx) {
+    int iteration = ctx.getInput("iteration", Integer.class);
+
+    if (shouldContinue(iteration)) {
+        ctx.continueAsNew(Map.of("iteration", iteration + 1));
+        return Mono.empty(); // workflow will restart with new input
+    }
+
+    return Mono.just(Map.of("finalIteration", iteration));
+}
+```
+
+#### Automatic Continue-As-New
+
+Configure a threshold to trigger continue-as-new automatically when the event count exceeds the limit:
+
+```yaml
+firefly:
+  workflow:
+    eventsourcing:
+      max-events-before-continue-as-new: 1000
+```
+
+When triggered:
+- The current aggregate is marked `COMPLETED` with a `ContinueAsNewEvent`
+- A new aggregate is created with the same `workflowId` and `correlationId`, plus a `previousRunId` reference
+- Active timers and pending signals are migrated to the new run
+
+### Side Effects
+
+Side effects capture the result of non-deterministic operations (such as generating UUIDs or reading the current time) so that they produce the same value during replay.
+
+#### Using ctx.sideEffect()
+
+```java
+@WorkflowStep(id = "generate-id")
+public Mono<Map<String, Object>> generateId(WorkflowContext ctx) {
+    // First execution: supplier runs, value stored as SideEffectRecordedEvent
+    // Replay: stored value returned, supplier NOT called
+    String uniqueId = ctx.sideEffect("order-id", () -> UUID.randomUUID().toString());
+    Instant timestamp = ctx.sideEffect("created-at", () -> Instant.now());
+
+    return Mono.just(Map.of(
+        "orderId", uniqueId,
+        "createdAt", timestamp.toString()
+    ));
+}
+```
+
+The first execution runs the supplier and records a `SideEffectRecordedEvent`. On replay, the stored value is returned without invoking the supplier, ensuring deterministic behavior.
+
+### Heartbeating
+
+Long-running steps can report progress via heartbeats. This allows the engine to distinguish between a step that is stuck and one that is making progress, and provides resume information on recovery.
+
+#### Using ctx.heartbeat()
+
+```java
+@WorkflowStep(id = "process-large-dataset", timeoutMs = 3600000)
+public Mono<Map<String, Object>> processLargeDataset(WorkflowContext ctx) {
+    List<Record> records = loadRecords();
+    int lastProcessed = ctx.getLastHeartbeatDetails("lastIndex", Integer.class, 0);
+
+    for (int i = lastProcessed; i < records.size(); i++) {
+        process(records.get(i));
+        ctx.heartbeat(Map.of("lastIndex", i, "progress", (i * 100) / records.size()));
+    }
+
+    return Mono.just(Map.of("totalProcessed", records.size()));
+}
+```
+
+Key behaviors:
+- Heartbeats are stored as `HeartbeatRecordedEvent` (throttled to avoid excessive writes)
+- Heartbeat timeout is separate from step timeout
+- On recovery, the last heartbeat details are available via `ctx.getLastHeartbeatDetails()` for resuming work
+
+```yaml
+firefly:
+  workflow:
+    heartbeat:
+      enabled: true
+      throttle-interval: PT5S  # Minimum interval between persisted heartbeats
+```
+
+### Compensation Orchestration
+
+When a workflow step fails, the engine can automatically run compensation logic on previously completed steps in reverse order. This provides saga-like rollback behavior within the durable execution model.
+
+#### Defining Compensation Steps
+
+Use the `@CompensationStep` annotation to declare compensation logic for a step:
+
+```java
+@Workflow(id = "order-fulfillment")
+public class OrderFulfillmentWorkflow {
+
+    @WorkflowStep(id = "reserve-inventory", dependsOn = {"validate"})
+    public Mono<Map<String, Object>> reserveInventory(WorkflowContext ctx) {
+        return inventoryService.reserve(ctx.getInput("items", List.class))
+            .map(res -> Map.of("reservationId", res.id()));
+    }
+
+    @CompensationStep(compensates = "reserve-inventory")
+    public Mono<Void> releaseInventory(WorkflowContext ctx) {
+        String reservationId = ctx.getStepOutput("reserve-inventory", Map.class)
+            .get("reservationId").toString();
+        return inventoryService.release(reservationId);
+    }
+
+    @WorkflowStep(id = "charge-payment", dependsOn = {"reserve-inventory"})
+    public Mono<Map<String, Object>> chargePayment(WorkflowContext ctx) {
+        return paymentService.charge(ctx.getInput("amount", BigDecimal.class))
+            .map(res -> Map.of("chargeId", res.id()));
+    }
+
+    @CompensationStep(compensates = "charge-payment")
+    public Mono<Void> refundPayment(WorkflowContext ctx) {
+        String chargeId = ctx.getStepOutput("charge-payment", Map.class)
+            .get("chargeId").toString();
+        return paymentService.refund(chargeId);
+    }
+}
+```
+
+#### Compensation Policies
+
+| Policy | Behavior |
+|--------|----------|
+| `STRICT_SEQUENTIAL` | Compensate in reverse order, stop on first compensation error |
+| `BEST_EFFORT` | Compensate all steps in reverse order, collect all errors |
+| `SKIP` | No compensation, workflow fails immediately |
+
+Configure the default policy:
+
+```yaml
+firefly:
+  workflow:
+    compensation:
+      enabled: true
+      default-policy: STRICT_SEQUENTIAL
+```
+
+#### Compensation Flow
+
+When a step fails and compensation is triggered:
+
+1. `CompensationStartedEvent` is recorded with the failed step and policy
+2. Completed steps are compensated in reverse order
+3. Each successful compensation records a `CompensationStepCompletedEvent`
+4. After all compensations complete (or on first failure in `STRICT_SEQUENTIAL`), a `WorkflowFailedEvent` is recorded
+
+### Search Attributes
+
+Search attributes are custom indexed fields that allow you to discover and filter workflow instances by business-relevant data.
+
+#### Setting Search Attributes
+
+```java
+@WorkflowStep(id = "process-order")
+public Mono<Map<String, Object>> processOrder(WorkflowContext ctx) {
+    String customerId = ctx.getInput("customerId", String.class);
+    String region = ctx.getInput("region", String.class);
+
+    ctx.upsertSearchAttribute("customerId", customerId);
+    ctx.upsertSearchAttribute("region", region);
+    ctx.upsertSearchAttribute("orderStatus", "PROCESSING");
+
+    return orderService.process(ctx.getInput("orderId", String.class))
+        .map(result -> Map.of("processed", true));
+}
+```
+
+Each call records a `SearchAttributeUpdatedEvent` in the event history. A projection materializes these attributes into an indexed R2DBC table for efficient querying.
+
+#### Searching by Attributes
+
+Via REST API:
+
+```bash
+GET /api/v1/workflows/search?customerId=CUST-123&region=us-east
+```
+
+Or programmatically:
+
+```java
+Flux<WorkflowInstance> instances = workflowEngine.searchByAttributes(
+    Map.of("customerId", "CUST-123", "region", "us-east")
+);
+```
+
+```yaml
+firefly:
+  workflow:
+    search-attributes:
+      enabled: true
+```
+
+### Queries
+
+Queries provide read-only inspection of running workflow internal state. Both built-in and custom queries are supported.
+
+#### Built-in Queries
+
+The engine provides several built-in queries:
+
+| Query Name | Description |
+|------------|-------------|
+| `getStatus` | Current workflow status |
+| `getCurrentStep` | Currently executing step |
+| `getStepHistory` | All step execution records |
+| `getContext` | Workflow context data |
+| `getSearchAttributes` | Current search attribute values |
+
+#### Custom Queries
+
+Define custom queries by annotating methods with `@WorkflowQuery`:
+
+```java
+@Workflow(id = "order-processing")
+public class OrderProcessingWorkflow {
+
+    @WorkflowQuery("orderSummary")
+    public Map<String, Object> getOrderSummary(WorkflowContext ctx) {
+        return Map.of(
+            "orderId", ctx.getInput("orderId", String.class),
+            "status", ctx.get("orderStatus", String.class),
+            "itemCount", ctx.get("itemCount", Integer.class),
+            "totalAmount", ctx.get("totalAmount", BigDecimal.class)
+        );
+    }
+
+    @WorkflowQuery("processingProgress")
+    public Map<String, Object> getProgress(WorkflowContext ctx) {
+        int completed = ctx.get("completedItems", Integer.class, 0);
+        int total = ctx.get("totalItems", Integer.class, 0);
+        return Map.of(
+            "completedItems", completed,
+            "totalItems", total,
+            "percentComplete", total > 0 ? (completed * 100) / total : 0
+        );
+    }
+}
+```
+
+#### Executing Queries
+
+Via REST API:
+
+```bash
+GET /api/v1/workflows/order-processing/instances/inst-789/query/orderSummary
+```
+
+Response:
+
+```json
+{
+  "orderId": "ORD-123",
+  "status": "PROCESSING",
+  "itemCount": 5,
+  "totalAmount": 299.99
+}
+```
+
+Or programmatically:
+
+```java
+Mono<Map<String, Object>> summary = workflowEngine.query(
+    "order-processing",
+    instanceId,
+    "orderSummary"
+);
+```
+
 ## Next Steps
 
 - [Getting Started](getting-started.md) - Basic tutorial

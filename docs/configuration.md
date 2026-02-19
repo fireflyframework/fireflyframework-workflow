@@ -259,6 +259,89 @@ firefly:
         cancel-running-future: true
 ```
 
+## Durable Execution Configuration
+
+Configuration for the durable execution engine features. All durable execution features require event sourcing to be enabled.
+
+### Event Sourcing Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `eventsourcing.enabled` | boolean | `false` | Enable event-sourced durable execution (opt-in) |
+| `eventsourcing.snapshot-threshold` | int | `20` | Number of events before taking a snapshot |
+| `eventsourcing.max-events-before-continue-as-new` | int | `1000` | Event count threshold for auto continue-as-new |
+
+### Signal Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `signals.enabled` | boolean | `true` | Enable signal delivery to workflows |
+| `signals.buffer-size` | int | `100` | Maximum buffered signals per workflow instance |
+
+### Timer Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `timers.enabled` | boolean | `true` | Enable durable timers |
+| `timers.poll-interval` | Duration | `PT1S` | How often to check for due timers |
+| `timers.batch-size` | int | `50` | Maximum timers to fire per poll cycle |
+
+### Child Workflow Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `child-workflows.enabled` | boolean | `true` | Enable child workflow spawning |
+| `child-workflows.max-depth` | int | `5` | Maximum nesting depth for child workflows |
+
+### Compensation Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `compensation.enabled` | boolean | `true` | Enable compensation orchestration |
+| `compensation.default-policy` | String | `STRICT_SEQUENTIAL` | Default compensation policy (`STRICT_SEQUENTIAL`, `BEST_EFFORT`, `SKIP`) |
+
+### Search Attributes Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `search-attributes.enabled` | boolean | `true` | Enable custom search attributes |
+
+### Heartbeat Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `heartbeat.enabled` | boolean | `true` | Enable activity heartbeating |
+| `heartbeat.throttle-interval` | Duration | `PT5S` | Minimum interval between persisted heartbeats |
+
+### Durable Execution Example
+
+```yaml
+firefly:
+  workflow:
+    eventsourcing:
+      enabled: true                            # opt-in to durable execution
+      snapshot-threshold: 20                   # snapshot every 20 events
+      max-events-before-continue-as-new: 1000  # auto-reset after 1000 events
+    signals:
+      enabled: true
+      buffer-size: 100
+    timers:
+      enabled: true
+      poll-interval: PT1S
+      batch-size: 50
+    child-workflows:
+      enabled: true
+      max-depth: 5
+    compensation:
+      enabled: true
+      default-policy: STRICT_SEQUENTIAL
+    search-attributes:
+      enabled: true
+    heartbeat:
+      enabled: true
+      throttle-interval: PT5S
+```
+
 ## Duration Format
 
 All duration properties use ISO-8601 duration format:
@@ -323,6 +406,30 @@ firefly:
       time-limiter:
         enabled: true
         timeout-duration: PT5M
+
+    # Durable Execution (opt-in)
+    eventsourcing:
+      enabled: false
+      snapshot-threshold: 20
+      max-events-before-continue-as-new: 1000
+    signals:
+      enabled: true
+      buffer-size: 100
+    timers:
+      enabled: true
+      poll-interval: PT1S
+      batch-size: 50
+    child-workflows:
+      enabled: true
+      max-depth: 5
+    compensation:
+      enabled: true
+      default-policy: STRICT_SEQUENTIAL
+    search-attributes:
+      enabled: true
+    heartbeat:
+      enabled: true
+      throttle-interval: PT5S
 ```
 
 ## Annotation Configuration

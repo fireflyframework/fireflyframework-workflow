@@ -466,6 +466,154 @@ graph TB
     STEP3 -->|sync| PARALLEL
 ```
 
+## Event Sourcing Architecture (Durable Execution)
+
+When durable execution is enabled (`firefly.workflow.eventsourcing.enabled: true`), the workflow engine uses an event-sourced persistence model built on **fireflyframework-eventsourcing**. This provides full durability, replay capability, and audit history for workflow instances.
+
+### WorkflowAggregate as AggregateRoot
+
+Each workflow instance is modeled as a `WorkflowAggregate` that extends `AggregateRoot` from fireflyframework-eventsourcing. All state changes are expressed as immutable domain events stored in the R2DBC event store.
+
+```mermaid
+graph TB
+    subgraph "WorkflowAggregate (extends AggregateRoot)"
+        STATE[State<br/>status, stepExecutions, context,<br/>pendingSignals, activeTimers,<br/>childWorkflows, searchAttributes]
+        COMMANDS[Commands<br/>start, completeStep, failStep,<br/>receiveSignal, fireTimer,<br/>spawnChildWorkflow, cancel]
+        HANDLERS[Event Handlers<br/>onWorkflowStarted, onStepCompleted,<br/>onSignalReceived, onTimerFired, ...]
+    end
+
+    subgraph "Event Store (R2DBC)"
+        EVENTS[(workflow_events)]
+        SNAPSHOTS[(workflow_snapshots)]
+    end
+
+    COMMANDS -->|emit| EVENTS
+    EVENTS -->|replay| HANDLERS
+    HANDLERS -->|mutate| STATE
+    STATE -->|periodic| SNAPSHOTS
+```
+
+### Event History as Source of Truth
+
+The event store is the authoritative source for all workflow state. Every command on the `WorkflowAggregate` produces one or more domain events (~22 event types):
+
+| Event | Trigger | Key Data |
+|-------|---------|----------|
+| `WorkflowStartedEvent` | Workflow begins | workflowId, definition snapshot, input |
+| `StepStartedEvent` | Step begins executing | stepId, input, attemptNumber |
+| `StepCompletedEvent` | Step succeeds | stepId, output, durationMs |
+| `StepFailedEvent` | Step fails | stepId, error, retryable |
+| `SignalReceivedEvent` | External signal arrives | signalName, payload |
+| `TimerFiredEvent` | Timer fires | timerId |
+| `ChildWorkflowSpawnedEvent` | Child created | childInstanceId, input |
+| `ChildWorkflowCompletedEvent` | Child finishes | childInstanceId, output |
+| `SideEffectRecordedEvent` | Non-deterministic capture | sideEffectId, value |
+| `HeartbeatRecordedEvent` | Step progress report | stepId, details |
+| `ContinueAsNewEvent` | History reset | newInput, previousRunOutput |
+| `CompensationStartedEvent` | Rollback begins | failedStepId, policy |
+| `SearchAttributeUpdatedEvent` | Attribute set | key, value |
+| `WorkflowCompletedEvent` | All steps done | output, durationMs |
+| `WorkflowFailedEvent` | Unrecoverable failure | error, failedStepId |
+| `WorkflowCancelledEvent` | User cancels | reason |
+
+### State Reconstruction from Events
+
+The aggregate state is fully reconstructable from the event history. Each event type has a corresponding `on()` handler that performs a pure state mutation:
+
+```
+1. Load latest snapshot (if exists) → WorkflowAggregate at version N
+2. Load events from version N+1 → current
+3. Apply each event via on() handler → full current state
+4. Ready for new commands
+```
+
+```java
+// Simplified state reconstruction
+WorkflowAggregate aggregate = new WorkflowAggregate();
+
+// Apply snapshot (if available)
+if (snapshot != null) {
+    aggregate.restoreFromSnapshot(snapshot);
+}
+
+// Replay events since snapshot
+for (DomainEvent event : eventsSinceSnapshot) {
+    aggregate.apply(event);  // pure state mutation, no side effects
+}
+
+// Aggregate is now at current state, ready for commands
+aggregate.completeStep("validate", output);
+```
+
+### Snapshot Optimization
+
+To avoid replaying the entire event history on every load, the engine takes periodic snapshots of aggregate state:
+
+- **Default threshold**: Snapshot every 20 events (configurable via `firefly.workflow.eventsourcing.snapshot-threshold`)
+- **Storage**: Snapshots are stored in the `workflow_snapshots` table
+- **Reconstruction**: Load snapshot + replay only events since the snapshot
+
+```mermaid
+graph LR
+    subgraph "Without Snapshots"
+        E1[Event 1] --> E2[Event 2] --> E3[...] --> EN[Event N]
+    end
+
+    subgraph "With Snapshots"
+        S1[Snapshot @ v20] --> E21[Event 21] --> E22[Event 22] --> E23[...]
+    end
+```
+
+For long-running workflows that accumulate thousands of events, the `continue-as-new` mechanism resets the event history entirely (see [Advanced Features](advanced-features.md)).
+
+### Integration with fireflyframework-eventsourcing
+
+The workflow engine reuses the full eventsourcing infrastructure:
+
+| Component | Usage |
+|-----------|-------|
+| `AggregateRoot` | Base class for `WorkflowAggregate` |
+| `EventStore` | Persists domain events to R2DBC `workflow_events` table |
+| `SnapshotStore` | Persists snapshots to `workflow_snapshots` table |
+| `Outbox` | Reliable event publishing via transactional outbox pattern |
+| `Projections` | Materializes read models (timers, search attributes) |
+| `Optimistic Concurrency` | Prevents conflicting concurrent updates to the same aggregate |
+
+### Cache as Read-Through Optimization
+
+With event sourcing enabled, the existing fireflyframework-cache layer transitions from being the primary state store to a **read-through cache**:
+
+```mermaid
+graph LR
+    subgraph "Read Path"
+        API[REST API / Query] --> CACHE[(Cache<br/>Redis/Caffeine)]
+        CACHE -->|miss| ES[Event Store]
+        ES -->|reconstruct| AGG[WorkflowAggregate]
+        AGG -->|populate| CACHE
+    end
+
+    subgraph "Write Path"
+        CMD[Command] --> AGG2[WorkflowAggregate]
+        AGG2 -->|append events| ES2[Event Store]
+        AGG2 -->|invalidate/update| CACHE2[(Cache)]
+    end
+```
+
+- **Reads**: Cache is checked first; on miss, the aggregate is reconstructed from events and the cache is populated
+- **Writes**: Events are appended to the event store (source of truth), then the cache is updated or invalidated
+- **Existing cache-only workflows**: Continue to work unchanged when `eventsourcing.enabled` is `false` (the default)
+
+### Database Schema
+
+The durable execution engine adds the following R2DBC tables (managed via Flyway):
+
+| Table | Purpose |
+|-------|---------|
+| `workflow_events` | Domain events (uses eventsourcing's `events` table schema) |
+| `workflow_snapshots` | Aggregate snapshots (uses eventsourcing's `snapshots` table schema) |
+| `workflow_timers` | Timer projection (timerId, instanceId, fireAt, status) |
+| `workflow_search_attributes` | Search attribute projection (instanceId, attributes JSONB, indexed) |
+
 ## Next Steps
 
 - [Getting Started](getting-started.md) - Step-by-step tutorial
