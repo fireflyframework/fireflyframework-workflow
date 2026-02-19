@@ -17,14 +17,20 @@
 package org.fireflyframework.workflow.core;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.fireflyframework.workflow.eventsourcing.aggregate.WorkflowAggregate;
 import org.fireflyframework.workflow.model.StepExecution;
 import org.fireflyframework.workflow.model.WorkflowDefinition;
 import org.fireflyframework.workflow.model.WorkflowInstance;
 import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.lang.Nullable;
+import reactor.core.publisher.Mono;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * Context object passed to workflow steps during execution.
@@ -39,6 +45,7 @@ import java.util.Optional;
  * <p>
  * Steps can add data to the context for use by subsequent steps.
  */
+@Slf4j
 @Getter
 public class WorkflowContext {
 
@@ -49,12 +56,15 @@ public class WorkflowContext {
     private final ObjectMapper objectMapper;
     private final boolean dryRun;
 
+    @Nullable
+    private final WorkflowAggregate aggregate;
+
     public WorkflowContext(
             WorkflowDefinition workflowDefinition,
             WorkflowInstance workflowInstance,
             String currentStepId,
             ObjectMapper objectMapper) {
-        this(workflowDefinition, workflowInstance, currentStepId, objectMapper, false);
+        this(workflowDefinition, workflowInstance, currentStepId, objectMapper, false, null);
     }
 
     public WorkflowContext(
@@ -63,12 +73,33 @@ public class WorkflowContext {
             String currentStepId,
             ObjectMapper objectMapper,
             boolean dryRun) {
+        this(workflowDefinition, workflowInstance, currentStepId, objectMapper, dryRun, null);
+    }
+
+    /**
+     * Full constructor including optional aggregate for durable execution mode.
+     *
+     * @param workflowDefinition the workflow definition
+     * @param workflowInstance   the workflow instance
+     * @param currentStepId      the current step identifier
+     * @param objectMapper       the Jackson object mapper
+     * @param dryRun             whether this is a dry-run execution
+     * @param aggregate          the event-sourced aggregate (null for cache-only mode)
+     */
+    public WorkflowContext(
+            WorkflowDefinition workflowDefinition,
+            WorkflowInstance workflowInstance,
+            String currentStepId,
+            ObjectMapper objectMapper,
+            boolean dryRun,
+            @Nullable WorkflowAggregate aggregate) {
         this.workflowDefinition = workflowDefinition;
         this.workflowInstance = workflowInstance;
         this.currentStepId = currentStepId;
         this.localContext = new HashMap<>(workflowInstance.context());
         this.objectMapper = objectMapper;
         this.dryRun = dryRun;
+        this.aggregate = aggregate;
     }
 
     /**
@@ -273,14 +304,90 @@ public class WorkflowContext {
      */
     public WorkflowContext forNextStep(String nextStepId, WorkflowInstance updatedInstance) {
         WorkflowContext next = new WorkflowContext(
-                workflowDefinition, 
+                workflowDefinition,
                 updatedInstance.withContext(localContext),
                 nextStepId,
                 objectMapper,
-                dryRun
+                dryRun,
+                aggregate
         );
         next.localContext.putAll(this.localContext);
         return next;
+    }
+
+    // ========================================================================
+    // Durable Execution Methods
+    // ========================================================================
+
+    /**
+     * Executes a side effect with deterministic replay support.
+     * <p>
+     * On first execution, the supplier is called and the result is recorded
+     * on the aggregate for future replay. On subsequent replays, the stored
+     * value is returned without calling the supplier, ensuring deterministic
+     * execution across replays.
+     * <p>
+     * If no aggregate is available (cache-only mode), the supplier is called
+     * directly without recording.
+     *
+     * @param id       the unique identifier for this side effect
+     * @param supplier the supplier that produces the side effect value
+     * @param <T>      the type of the side effect value
+     * @return the side effect value (either fresh or replayed)
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T sideEffect(String id, Supplier<T> supplier) {
+        if (aggregate == null) {
+            return supplier.get();
+        }
+
+        Optional<Object> stored = aggregate.getSideEffect(id);
+        if (stored.isPresent()) {
+            return (T) stored.get();
+        }
+
+        T value = supplier.get();
+        aggregate.recordSideEffect(id, value);
+        return value;
+    }
+
+    /**
+     * Records a heartbeat for the current step.
+     * <p>
+     * Heartbeats are used to report progress for long-running steps and to
+     * detect liveness. If no aggregate is available, the heartbeat is a no-op
+     * (logged at debug level).
+     *
+     * @param details the heartbeat details (e.g., progress percentage, status message)
+     */
+    public void heartbeat(Map<String, Object> details) {
+        if (aggregate != null) {
+            aggregate.heartbeat(currentStepId, details);
+        } else {
+            log.debug("Heartbeat ignored (no aggregate): stepId={}, details={}", currentStepId, details);
+        }
+    }
+
+    /**
+     * Spawns a child workflow from the current step.
+     * <p>
+     * In durable execution mode, the child workflow is recorded on the aggregate
+     * and a unique child instance ID is generated. In cache-only mode (no aggregate),
+     * this operation is not supported and returns an error.
+     *
+     * @param workflowId the child workflow definition identifier
+     * @param input      the input for the child workflow
+     * @return a Mono that completes when the child workflow is spawned
+     */
+    public Mono<Void> startChildWorkflow(String workflowId, Map<String, Object> input) {
+        if (aggregate == null) {
+            return Mono.error(new UnsupportedOperationException(
+                    "Child workflows require durable execution mode (event-sourced aggregate)"));
+        }
+
+        String childInstanceId = UUID.randomUUID().toString();
+        aggregate.spawnChildWorkflow(childInstanceId, workflowId, input, currentStepId);
+        return Mono.empty();
     }
 
     /**
