@@ -18,6 +18,7 @@ package org.fireflyframework.workflow.eventsourcing.aggregate;
 
 import org.fireflyframework.eventsourcing.aggregate.AggregateRoot;
 import org.fireflyframework.workflow.eventsourcing.event.*;
+import org.fireflyframework.workflow.eventsourcing.snapshot.WorkflowSnapshot;
 import org.fireflyframework.workflow.model.StepStatus;
 import org.fireflyframework.workflow.model.WorkflowStatus;
 import lombok.Getter;
@@ -708,6 +709,92 @@ public class WorkflowAggregate extends AggregateRoot {
     @SuppressWarnings("unused")
     private void on(SearchAttributeUpdatedEvent event) {
         searchAttributes.put(event.getKey(), event.getValue());
+    }
+
+    // ========================================================================
+    // Snapshot Restore
+    // ========================================================================
+
+    /**
+     * Restores all internal state from a {@link WorkflowSnapshot}.
+     * <p>
+     * <b>Framework internal use only.</b> This method is called by
+     * {@link WorkflowSnapshot#restore()} to directly set all fields
+     * without replaying events. Application code should use
+     * {@link WorkflowSnapshot#restore()} instead.
+     *
+     * @param snapshot the snapshot to restore from
+     */
+    public void restoreFromSnapshot(WorkflowSnapshot snapshot) {
+        this.workflowId = snapshot.getWorkflowId();
+        this.workflowName = snapshot.getWorkflowName();
+        this.workflowVersion = snapshot.getWorkflowVersion();
+        this.status = snapshot.getStatus();
+        this.currentStepId = snapshot.getCurrentStepId();
+        this.context = snapshot.getContext() != null
+                ? new HashMap<>(snapshot.getContext()) : new HashMap<>();
+        this.input = snapshot.getInput() != null
+                ? new HashMap<>(snapshot.getInput()) : new HashMap<>();
+        this.output = snapshot.getOutput();
+        this.correlationId = snapshot.getCorrelationId();
+        this.triggeredBy = snapshot.getTriggeredBy();
+        this.dryRun = snapshot.isDryRun();
+        this.startedAt = snapshot.getStartedAt();
+        this.completedAt = snapshot.getCompletedAt();
+
+        // Restore step states from serializable StepStateData
+        this.stepStates.clear();
+        if (snapshot.getStepStatesSnapshot() != null) {
+            snapshot.getStepStatesSnapshot().forEach((key, data) ->
+                    this.stepStates.put(key, data.toStepState()));
+        }
+
+        // Restore pending signals
+        this.pendingSignals.clear();
+        if (snapshot.getPendingSignals() != null) {
+            this.pendingSignals.putAll(snapshot.getPendingSignals());
+        }
+
+        // Restore active timers
+        this.activeTimers.clear();
+        if (snapshot.getActiveTimers() != null) {
+            this.activeTimers.putAll(snapshot.getActiveTimers());
+        }
+
+        // Restore child workflows
+        this.childWorkflows.clear();
+        if (snapshot.getChildWorkflows() != null) {
+            this.childWorkflows.putAll(snapshot.getChildWorkflows());
+        }
+
+        // Restore side effects
+        this.sideEffects.clear();
+        if (snapshot.getSideEffects() != null) {
+            this.sideEffects.putAll(snapshot.getSideEffects());
+        }
+
+        // Restore search attributes
+        this.searchAttributes.clear();
+        if (snapshot.getSearchAttributes() != null) {
+            this.searchAttributes.putAll(snapshot.getSearchAttributes());
+        }
+
+        // Restore heartbeats
+        this.lastHeartbeats.clear();
+        if (snapshot.getLastHeartbeats() != null) {
+            snapshot.getLastHeartbeats().forEach((key, value) ->
+                    this.lastHeartbeats.put(key, value != null
+                            ? new HashMap<>(value) : new HashMap<>()));
+        }
+
+        // Restore completed step order
+        this.completedStepOrder.clear();
+        if (snapshot.getCompletedStepOrder() != null) {
+            this.completedStepOrder.addAll(snapshot.getCompletedStepOrder());
+        }
+
+        // Restore the aggregate version
+        setCurrentVersion(snapshot.getVersion());
     }
 
     // ========================================================================
