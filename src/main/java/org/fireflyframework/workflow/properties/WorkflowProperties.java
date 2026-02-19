@@ -292,7 +292,7 @@ public class WorkflowProperties {
         /**
          * Base path for workflow REST endpoints.
          */
-        private String basePath = "/api/workflows";
+        private String basePath = "/api/v1/workflows";
 
         /**
          * Whether to enable Swagger/OpenAPI documentation.

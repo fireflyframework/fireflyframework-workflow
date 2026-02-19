@@ -130,7 +130,7 @@ Configuration for the REST API.
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `api.enabled` | boolean | `true` | Enable REST API |
-| `api.base-path` | String | `/api/workflows` | Base path for endpoints |
+| `api.base-path` | String | `/api/v1/workflows` | Base path for endpoints |
 
 ## Scheduling Configuration
 
@@ -391,7 +391,7 @@ firefly:
 
     api:
       enabled: true
-      base-path: /api/workflows
+      base-path: /api/v1/workflows
       documentation-enabled: true
 
     resilience:

@@ -56,6 +56,12 @@ The main facade providing high-level API for workflow operations:
 - `retryWorkflow()` - Retry a failed workflow
 - `collectResult()` - Get the result of a completed workflow
 - `getWorkflowState()` - Get enriched workflow state with step details
+- `suspendWorkflow()` / `resumeWorkflow()` - Pause and resume workflows
+- `getStepState()` / `getStepStates()` - Query individual or all step states
+- `findInstances()` / `findActiveInstances()` / `findByCorrelationId()` - Instance discovery
+- `findWorkflowsByTriggerEvent()` / `findStepsWaitingForEvent()` - Event-based discovery
+
+See the [API Reference](api-reference.md) for the full method list.
 
 ### WorkflowExecutor
 
