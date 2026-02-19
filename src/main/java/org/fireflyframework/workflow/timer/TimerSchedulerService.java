@@ -18,9 +18,10 @@ package org.fireflyframework.workflow.timer;
 
 import org.fireflyframework.eventsourcing.store.ConcurrencyException;
 import org.fireflyframework.workflow.eventsourcing.store.EventSourcedWorkflowStateStore;
+import org.springframework.beans.factory.DisposableBean;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.DisposableBean;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -73,7 +74,7 @@ public class TimerSchedulerService implements DisposableBean {
      * queries the projection for due timers and fires them. Errors during
      * polling are logged but do not terminate the loop.
      */
-    public void start() {
+    public synchronized void start() {
         if (pollingSubscription != null && !pollingSubscription.isDisposed()) {
             log.warn("Timer scheduler is already running");
             return;
@@ -95,7 +96,7 @@ public class TimerSchedulerService implements DisposableBean {
      * <p>
      * Safe to call multiple times or before {@link #start()} has been called.
      */
-    public void stop() {
+    public synchronized void stop() {
         if (pollingSubscription != null && !pollingSubscription.isDisposed()) {
             log.info("Stopping timer scheduler");
             pollingSubscription.dispose();
@@ -177,10 +178,8 @@ public class TimerSchedulerService implements DisposableBean {
                 }))
                 .onErrorResume(ConcurrencyException.class, e -> {
                     log.info("Concurrency conflict firing timer '{}' on instance {} " +
-                                    "(another node likely fired it): {}",
+                                    "(will retry on next poll cycle): {}",
                             timerEntry.timerId(), timerEntry.instanceId(), e.getMessage());
-                    // Remove from projection since it was handled by another node
-                    timerProjection.onTimerFired(timerEntry.instanceId(), timerEntry.timerId());
                     return Mono.empty();
                 })
                 .onErrorResume(e -> {

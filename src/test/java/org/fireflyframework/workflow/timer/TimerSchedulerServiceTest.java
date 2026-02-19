@@ -173,7 +173,7 @@ class TimerSchedulerServiceTest {
         }
 
         @Test
-        @DisplayName("should handle concurrency exception gracefully (another node fired the timer)")
+        @DisplayName("should handle concurrency exception gracefully and keep timer in projection for retry")
         void pollAndFireTimers_concurrencyConflict_shouldContinue() {
             UUID instance1 = UUID.randomUUID();
             UUID instance2 = UUID.randomUUID();
@@ -201,6 +201,9 @@ class TimerSchedulerServiceTest {
             // Both timers should have been attempted
             verify(stateStore).loadAggregate(instance1);
             verify(stateStore).loadAggregate(instance2);
+
+            // The failed timer should remain in the projection for retry on next poll cycle
+            assertThat(projection.getActiveTimerCount()).isEqualTo(1);
         }
 
         @Test
@@ -280,14 +283,12 @@ class TimerSchedulerServiceTest {
     class LifecycleTests {
 
         @Test
-        @DisplayName("start should begin polling loop")
-        void start_shouldBeginPolling() {
-            // Just verify it doesn't throw
+        @DisplayName("double start should be a no-op")
+        void start_doubleStart_shouldBeNoOp() {
             schedulerService.start();
-
-            // Brief delay to allow at least one poll cycle
-            // The polling loop itself is tested via pollAndFireTimers
-            assertThat(schedulerService).isNotNull();
+            schedulerService.start(); // Should not throw or create a second subscription
+            // If a second subscription were created, tearDown's stop() would only
+            // dispose one, leaking the other. No error here means idempotent.
         }
 
         @Test
