@@ -120,20 +120,23 @@ class ChildWorkflowServiceTest {
         }
 
         @Test
-        @DisplayName("should error when parent ID is invalid")
-        void spawnChildWorkflow_withInvalidParentId_shouldError() {
-            // Use a null UUID to trigger an error path — the service takes UUID directly,
-            // so we test the "parent not found" case instead
-            UUID nonExistentId = UUID.randomUUID();
-            when(stateStore.loadAggregate(nonExistentId)).thenReturn(Mono.empty());
+        @DisplayName("should error when child aggregate save fails")
+        void spawnChildWorkflow_childSaveFails_shouldError() {
+            WorkflowAggregate parentAggregate = createRunningAggregate(PARENT_AGGREGATE_ID);
+
+            when(stateStore.loadAggregate(PARENT_AGGREGATE_ID)).thenReturn(Mono.just(parentAggregate));
+            // First save (parent) succeeds, second save (child) fails
+            when(stateStore.saveAggregate(any(WorkflowAggregate.class)))
+                    .thenReturn(Mono.just(parentAggregate))
+                    .thenReturn(Mono.error(new RuntimeException("Child save failed")));
 
             StepVerifier.create(childWorkflowService.spawnChildWorkflow(
-                            nonExistentId, PARENT_STEP_ID, CHILD_WORKFLOW_ID, CHILD_INPUT))
-                    .expectError(WorkflowNotFoundException.class)
+                            PARENT_AGGREGATE_ID, PARENT_STEP_ID, CHILD_WORKFLOW_ID, CHILD_INPUT))
+                    .expectError(RuntimeException.class)
                     .verify();
 
-            verify(stateStore).loadAggregate(nonExistentId);
-            verify(stateStore, never()).saveAggregate(any());
+            // Save called twice: once for parent (success), once for child (failure)
+            verify(stateStore, times(2)).saveAggregate(any(WorkflowAggregate.class));
         }
 
         @Test
@@ -204,6 +207,33 @@ class ChildWorkflowServiceTest {
 
             // Should not attempt to load or save any aggregate
             verify(stateStore, never()).loadAggregate(any());
+            verify(stateStore, never()).saveAggregate(any());
+        }
+
+        @Test
+        @DisplayName("should be idempotent when child is already completed")
+        void completeChildWorkflow_alreadyCompleted_shouldBeNoOp() {
+            UUID childInstanceId = UUID.randomUUID();
+            String childInstanceIdStr = childInstanceId.toString();
+            Object childOutput = Map.of("result", "processed");
+
+            // Create parent with the child already spawned AND completed
+            WorkflowAggregate parentAggregate = createParentWithChild(PARENT_AGGREGATE_ID, childInstanceIdStr);
+            parentAggregate.completeChildWorkflow(childInstanceIdStr, childOutput, true);
+            parentAggregate.markEventsAsCommitted();
+
+            // Register the child-parent mapping
+            childWorkflowService.registerChildParentMapping(childInstanceIdStr, PARENT_AGGREGATE_ID);
+
+            when(stateStore.loadAggregate(PARENT_AGGREGATE_ID)).thenReturn(Mono.just(parentAggregate));
+
+            // Second completion attempt should be a no-op
+            StepVerifier.create(childWorkflowService.completeChildWorkflow(
+                            childInstanceId, Map.of("result", "second-attempt"), true))
+                    .verifyComplete();
+
+            // Load was called but save should NOT be called (idempotency guard)
+            verify(stateStore).loadAggregate(PARENT_AGGREGATE_ID);
             verify(stateStore, never()).saveAggregate(any());
         }
     }
@@ -287,6 +317,19 @@ class ChildWorkflowServiceTest {
             // Save called for 1 child only
             verify(stateStore, times(1)).saveAggregate(any(WorkflowAggregate.class));
         }
+
+        @Test
+        @DisplayName("should complete gracefully when parent is not found")
+        void cancelChildWorkflows_parentNotFound_shouldCompleteEmpty() {
+            UUID nonExistentParentId = UUID.randomUUID();
+            when(stateStore.loadAggregate(nonExistentParentId)).thenReturn(Mono.empty());
+
+            StepVerifier.create(childWorkflowService.cancelChildWorkflows(nonExistentParentId))
+                    .verifyComplete();
+
+            verify(stateStore).loadAggregate(nonExistentParentId);
+            verify(stateStore, never()).saveAggregate(any());
+        }
     }
 
     // ========================================================================
@@ -325,6 +368,7 @@ class ChildWorkflowServiceTest {
                         assertThat(child1Info.childWorkflowId()).isEqualTo(CHILD_WORKFLOW_ID);
                         assertThat(child1Info.parentStepId()).isEqualTo("step-1");
                         assertThat(child1Info.completed()).isTrue();
+                        assertThat(child1Info.success()).isTrue();
                         assertThat(child1Info.output()).isEqualTo(Map.of("result", "ok"));
 
                         // Check incomplete child
@@ -334,11 +378,25 @@ class ChildWorkflowServiceTest {
                         assertThat(child2Info.childWorkflowId()).isEqualTo("other-child-workflow");
                         assertThat(child2Info.parentStepId()).isEqualTo("step-2");
                         assertThat(child2Info.completed()).isFalse();
+                        assertThat(child2Info.success()).isFalse();
                         assertThat(child2Info.output()).isNull();
                     })
                     .verifyComplete();
 
             verify(stateStore).loadAggregate(PARENT_AGGREGATE_ID);
+        }
+
+        @Test
+        @DisplayName("should throw WorkflowNotFoundException when parent not found")
+        void getChildWorkflowStatus_parentNotFound_shouldThrow() {
+            UUID nonExistentParentId = UUID.randomUUID();
+            when(stateStore.loadAggregate(nonExistentParentId)).thenReturn(Mono.empty());
+
+            StepVerifier.create(childWorkflowService.getChildWorkflowStatus(nonExistentParentId))
+                    .expectError(WorkflowNotFoundException.class)
+                    .verify();
+
+            verify(stateStore).loadAggregate(nonExistentParentId);
         }
     }
 }

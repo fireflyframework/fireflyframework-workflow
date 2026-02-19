@@ -531,11 +531,12 @@ class WorkflowAggregateStepsTest {
         @DisplayName("complete should return new ref marked as completed")
         void completeShouldReturnCompleted() {
             WorkflowAggregate.ChildWorkflowRef ref = new WorkflowAggregate.ChildWorkflowRef(
-                    "child-1", "payment-wf", "step-2", false, null);
+                    "child-1", "payment-wf", "step-2", false, false, null);
 
             WorkflowAggregate.ChildWorkflowRef completed = ref.complete("result", true);
 
             assertThat(completed.completed()).isTrue();
+            assertThat(completed.success()).isTrue();
             assertThat(completed.output()).isEqualTo("result");
             assertThat(completed.childInstanceId()).isEqualTo("child-1");
             assertThat(completed.childWorkflowId()).isEqualTo("payment-wf");

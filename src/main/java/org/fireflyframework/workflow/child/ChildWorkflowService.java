@@ -121,7 +121,13 @@ public class ChildWorkflowService {
                                         false
                                 );
 
-                                return stateStore.saveAggregate(childAggregate);
+                                return stateStore.saveAggregate(childAggregate)
+                                        .onErrorResume(e -> {
+                                            log.error("CRITICAL: Parent spawn event persisted but child aggregate creation failed. " +
+                                                            "parentId={}, childId={}, childWorkflowId={}: {}",
+                                                    parentInstanceId, childInstanceIdStr, childWorkflowId, e.getMessage(), e);
+                                            return Mono.error(e);
+                                        });
                             })
                             .doOnSuccess(savedChild -> {
                                 // Store the parent-child mapping
@@ -177,6 +183,14 @@ public class ChildWorkflowService {
                     return Mono.empty();
                 }))
                 .flatMap(parentAggregate -> {
+                    // Idempotency guard: skip if child is already completed
+                    WorkflowAggregate.ChildWorkflowRef existingRef = parentAggregate.getChildWorkflows().get(childInstanceIdStr);
+                    if (existingRef != null && existingRef.completed()) {
+                        log.warn("Child workflow already completed, skipping duplicate notification: childId={}", childInstanceIdStr);
+                        parentChildMap.remove(childInstanceIdStr);
+                        return Mono.empty();
+                    }
+
                     parentAggregate.completeChildWorkflow(childInstanceIdStr, output, success);
 
                     log.debug("Recorded child completion on parent: parentId={}, childId={}, success={}",
@@ -253,6 +267,7 @@ public class ChildWorkflowService {
                                     childRef.childWorkflowId(),
                                     childRef.parentStepId(),
                                     childRef.completed(),
+                                    childRef.success(),
                                     childRef.output()
                             ))
                     );
@@ -260,10 +275,7 @@ public class ChildWorkflowService {
                     log.debug("Found {} child workflow(s) for parent: {}", result.size(), parentInstanceId);
                     return result;
                 })
-                .switchIfEmpty(Mono.defer(() -> {
-                    log.warn("Parent aggregate not found for status query: {}", parentInstanceId);
-                    return Mono.just(Map.of());
-                }));
+                .switchIfEmpty(Mono.error(new WorkflowNotFoundException("unknown", parentInstanceId.toString())));
     }
 
     /**

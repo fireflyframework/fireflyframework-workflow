@@ -26,6 +26,7 @@ package org.fireflyframework.workflow.child;
  * @param childWorkflowId the child workflow definition identifier
  * @param parentStepId    the parent step that spawned the child
  * @param completed       whether the child workflow has completed
+ * @param success         whether the child workflow completed successfully
  * @param output          the child workflow output, or null if not yet completed
  */
 public record ChildWorkflowInfo(
@@ -33,5 +34,6 @@ public record ChildWorkflowInfo(
         String childWorkflowId,
         String parentStepId,
         boolean completed,
+        boolean success,
         Object output
 ) {}

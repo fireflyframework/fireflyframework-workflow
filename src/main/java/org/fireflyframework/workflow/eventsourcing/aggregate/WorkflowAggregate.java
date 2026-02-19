@@ -664,6 +664,7 @@ public class WorkflowAggregate extends AggregateRoot {
                 event.getChildWorkflowId(),
                 event.getParentStepId(),
                 false,
+                false,
                 null));
     }
 
@@ -900,6 +901,7 @@ public class WorkflowAggregate extends AggregateRoot {
             String childWorkflowId,
             String parentStepId,
             boolean completed,
+            boolean success,
             Object output) {
 
         /**
@@ -911,7 +913,7 @@ public class WorkflowAggregate extends AggregateRoot {
          */
         public ChildWorkflowRef complete(Object output, boolean success) {
             return new ChildWorkflowRef(childInstanceId, childWorkflowId,
-                    parentStepId, true, output);
+                    parentStepId, true, success, output);
         }
     }
 }
