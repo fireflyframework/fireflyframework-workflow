@@ -20,8 +20,10 @@ import org.fireflyframework.workflow.exception.StepExecutionException;
 import org.fireflyframework.workflow.exception.WorkflowNotFoundException;
 import org.fireflyframework.workflow.model.WorkflowDefinition;
 import org.fireflyframework.workflow.model.WorkflowStatus;
+import org.fireflyframework.workflow.model.WorkflowInstance;
 import org.fireflyframework.workflow.query.WorkflowQueryService;
 import org.fireflyframework.workflow.rest.dto.SendSignalRequest;
+import org.fireflyframework.workflow.search.WorkflowSearchService;
 import org.fireflyframework.workflow.rest.dto.StartWorkflowRequest;
 import org.fireflyframework.workflow.rest.dto.StepStateResponse;
 import org.fireflyframework.workflow.rest.dto.SuspendWorkflowRequest;
@@ -74,13 +76,17 @@ public class WorkflowController {
     private final SignalService signalService;
     @Nullable
     private final WorkflowQueryService queryService;
+    @Nullable
+    private final WorkflowSearchService searchService;
 
     public WorkflowController(WorkflowService workflowService,
                               @Nullable SignalService signalService,
-                              @Nullable WorkflowQueryService queryService) {
+                              @Nullable WorkflowQueryService queryService,
+                              @Nullable WorkflowSearchService searchService) {
         this.workflowService = workflowService;
         this.signalService = signalService;
         this.queryService = queryService;
+        this.searchService = searchService;
     }
 
     /**
@@ -435,6 +441,37 @@ public class WorkflowController {
                 .onErrorResume(IllegalArgumentException.class, e ->
                         Mono.just(ResponseEntity.badRequest().body(
                                 Map.of("error", e.getMessage()))));
+    }
+
+    // ==================== Search Endpoints ====================
+
+    /**
+     * Searches for workflow instances by search attributes.
+     * <p>
+     * Accepts query parameters as search criteria and returns all workflow
+     * instances whose search attributes match ALL provided key-value pairs
+     * (AND semantics).
+     * <p>
+     * Example: {@code GET /api/v1/workflows/search?region=us-east-1&priority=high}
+     * <p>
+     * Requires the event-sourced search service to be configured.
+     */
+    @GetMapping("/search")
+    public Mono<ResponseEntity<Flux<WorkflowInstance>>> searchByAttributes(
+            @RequestParam Map<String, String> params) {
+
+        if (searchService == null) {
+            log.warn("Search endpoint called but WorkflowSearchService is not configured");
+            return Mono.just(ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build());
+        }
+
+        log.info("Searching workflows via API: criteria={}", params);
+
+        // Convert String values to Object for the service API
+        Map<String, Object> criteria = Map.copyOf(params);
+
+        Flux<WorkflowInstance> results = searchService.searchByAttributes(criteria);
+        return Mono.just(ResponseEntity.ok(results));
     }
 
     // ==================== Private Helper Methods ====================

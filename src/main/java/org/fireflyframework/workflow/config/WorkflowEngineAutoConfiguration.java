@@ -33,6 +33,7 @@ import org.fireflyframework.workflow.rest.DeadLetterController;
 import org.fireflyframework.workflow.query.WorkflowQueryService;
 import org.fireflyframework.workflow.rest.WorkflowController;
 import org.fireflyframework.workflow.scheduling.WorkflowScheduler;
+import org.fireflyframework.workflow.search.WorkflowSearchService;
 import org.fireflyframework.workflow.service.WorkflowService;
 import org.fireflyframework.workflow.signal.SignalService;
 import org.fireflyframework.workflow.metrics.WorkflowMetrics;
@@ -187,10 +188,11 @@ public class WorkflowEngineAutoConfiguration {
     public WorkflowController workflowController(
             WorkflowService workflowService,
             @Nullable SignalService signalService,
-            @Nullable WorkflowQueryService queryService) {
-        log.info("Creating WorkflowController REST API (signalService: {}, queryService: {})",
-                signalService != null, queryService != null);
-        return new WorkflowController(workflowService, signalService, queryService);
+            @Nullable WorkflowQueryService queryService,
+            @Nullable WorkflowSearchService searchService) {
+        log.info("Creating WorkflowController REST API (signalService: {}, queryService: {}, searchService: {})",
+                signalService != null, queryService != null, searchService != null);
+        return new WorkflowController(workflowService, signalService, queryService, searchService);
     }
 
     /**
