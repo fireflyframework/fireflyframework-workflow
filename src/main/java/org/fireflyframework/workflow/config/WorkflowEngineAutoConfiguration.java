@@ -18,12 +18,18 @@ package org.fireflyframework.workflow.config;
 
 import org.fireflyframework.cache.core.CacheAdapter;
 import org.fireflyframework.eda.publisher.EventPublisherFactory;
+import org.fireflyframework.eventsourcing.store.EventStore;
 import org.fireflyframework.workflow.aspect.WorkflowAspect;
+import org.fireflyframework.workflow.child.ChildWorkflowService;
+import org.fireflyframework.workflow.compensation.CompensationOrchestrator;
+import org.fireflyframework.workflow.continueasnew.ContinueAsNewService;
+import org.fireflyframework.workflow.core.StepHandler;
 import org.fireflyframework.workflow.core.WorkflowEngine;
 import org.fireflyframework.workflow.core.WorkflowExecutor;
 import org.fireflyframework.workflow.core.WorkflowRegistry;
 import org.fireflyframework.workflow.event.WorkflowEventListener;
 import org.fireflyframework.workflow.event.WorkflowEventPublisher;
+import org.fireflyframework.workflow.eventsourcing.store.EventSourcedWorkflowStateStore;
 import org.fireflyframework.workflow.health.WorkflowEngineHealthIndicator;
 import org.fireflyframework.workflow.properties.WorkflowProperties;
 import org.fireflyframework.workflow.dlq.CacheDeadLetterStore;
@@ -33,6 +39,7 @@ import org.fireflyframework.workflow.rest.DeadLetterController;
 import org.fireflyframework.workflow.query.WorkflowQueryService;
 import org.fireflyframework.workflow.rest.WorkflowController;
 import org.fireflyframework.workflow.scheduling.WorkflowScheduler;
+import org.fireflyframework.workflow.search.SearchAttributeProjection;
 import org.fireflyframework.workflow.search.WorkflowSearchService;
 import org.fireflyframework.workflow.service.WorkflowService;
 import org.fireflyframework.workflow.signal.SignalService;
@@ -42,8 +49,12 @@ import org.fireflyframework.workflow.state.CacheStepStateStore;
 import org.fireflyframework.workflow.state.CacheWorkflowStateStore;
 import org.fireflyframework.workflow.state.StepStateStore;
 import org.fireflyframework.workflow.state.WorkflowStateStore;
+import org.fireflyframework.workflow.timer.TimerSchedulerService;
+import org.fireflyframework.workflow.timer.WorkflowTimerProjection;
 import org.fireflyframework.workflow.tracing.WorkflowTracer;
 import org.springframework.lang.Nullable;
+
+import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -177,6 +188,108 @@ public class WorkflowEngineAutoConfiguration {
     public WorkflowService workflowService(WorkflowEngine workflowEngine) {
         log.info("Creating WorkflowService");
         return new WorkflowService(workflowEngine);
+    }
+
+    // ==================== Durable Execution Beans ====================
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(EventStore.class)
+    @ConditionalOnProperty(prefix = "firefly.workflow.eventsourcing", name = "enabled", havingValue = "true")
+    public EventSourcedWorkflowStateStore eventSourcedWorkflowStateStore(EventStore eventStore) {
+        log.info("Creating EventSourcedWorkflowStateStore for durable execution");
+        return new EventSourcedWorkflowStateStore(eventStore);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(EventSourcedWorkflowStateStore.class)
+    @ConditionalOnProperty(prefix = "firefly.workflow.signals", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SignalService signalService(EventSourcedWorkflowStateStore eventSourcedStateStore) {
+        log.info("Creating SignalService for durable signal delivery");
+        return new SignalService(eventSourcedStateStore);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(EventSourcedWorkflowStateStore.class)
+    public WorkflowQueryService workflowQueryService(EventSourcedWorkflowStateStore eventSourcedStateStore) {
+        log.info("Creating WorkflowQueryService for workflow state inspection");
+        return new WorkflowQueryService(eventSourcedStateStore);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "firefly.workflow.timers", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public WorkflowTimerProjection workflowTimerProjection() {
+        log.info("Creating WorkflowTimerProjection for durable timer tracking");
+        return new WorkflowTimerProjection();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean({WorkflowTimerProjection.class, EventSourcedWorkflowStateStore.class})
+    @ConditionalOnProperty(prefix = "firefly.workflow.timers", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public TimerSchedulerService timerSchedulerService(
+            WorkflowTimerProjection timerProjection,
+            EventSourcedWorkflowStateStore eventSourcedStateStore,
+            WorkflowProperties properties) {
+        TimerSchedulerService scheduler = new TimerSchedulerService(
+                timerProjection,
+                eventSourcedStateStore,
+                properties.getTimers().getPollInterval(),
+                properties.getTimers().getBatchSize());
+        scheduler.start();
+        log.info("Created and started TimerSchedulerService with pollInterval={}, batchSize={}",
+                properties.getTimers().getPollInterval(), properties.getTimers().getBatchSize());
+        return scheduler;
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(EventSourcedWorkflowStateStore.class)
+    @ConditionalOnProperty(prefix = "firefly.workflow.child-workflows", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ChildWorkflowService childWorkflowService(EventSourcedWorkflowStateStore eventSourcedStateStore) {
+        log.info("Creating ChildWorkflowService for parent-child workflow management");
+        return new ChildWorkflowService(eventSourcedStateStore);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(EventSourcedWorkflowStateStore.class)
+    @ConditionalOnProperty(prefix = "firefly.workflow.compensation", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public CompensationOrchestrator compensationOrchestrator(
+            EventSourcedWorkflowStateStore eventSourcedStateStore,
+            Map<String, StepHandler<?>> stepHandlers) {
+        log.info("Creating CompensationOrchestrator for saga-style compensation");
+        return new CompensationOrchestrator(eventSourcedStateStore, stepHandlers);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "firefly.workflow.search-attributes", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SearchAttributeProjection searchAttributeProjection() {
+        log.info("Creating SearchAttributeProjection for workflow discovery");
+        return new SearchAttributeProjection();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean({SearchAttributeProjection.class, EventSourcedWorkflowStateStore.class})
+    @ConditionalOnProperty(prefix = "firefly.workflow.search-attributes", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public WorkflowSearchService workflowSearchService(
+            SearchAttributeProjection searchAttributeProjection,
+            EventSourcedWorkflowStateStore eventSourcedStateStore) {
+        log.info("Creating WorkflowSearchService for search by attributes");
+        return new WorkflowSearchService(searchAttributeProjection, eventSourcedStateStore);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(EventSourcedWorkflowStateStore.class)
+    public ContinueAsNewService continueAsNewService(EventSourcedWorkflowStateStore eventSourcedStateStore) {
+        log.info("Creating ContinueAsNewService for long-running workflow history reset");
+        return new ContinueAsNewService(eventSourcedStateStore);
     }
 
     /**

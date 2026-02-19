@@ -118,6 +118,55 @@ public class WorkflowProperties {
     private RecoveryConfig recovery = new RecoveryConfig();
 
     /**
+     * Event sourcing configuration for durable execution.
+     */
+    @Valid
+    @NotNull
+    private EventSourcingConfig eventsourcing = new EventSourcingConfig();
+
+    /**
+     * Signal delivery configuration.
+     */
+    @Valid
+    @NotNull
+    private SignalConfig signals = new SignalConfig();
+
+    /**
+     * Durable timer configuration.
+     */
+    @Valid
+    @NotNull
+    private TimerConfig timers = new TimerConfig();
+
+    /**
+     * Child workflow configuration.
+     */
+    @Valid
+    @NotNull
+    private ChildWorkflowConfig childWorkflows = new ChildWorkflowConfig();
+
+    /**
+     * Compensation (saga rollback) configuration.
+     */
+    @Valid
+    @NotNull
+    private CompensationConfig compensation = new CompensationConfig();
+
+    /**
+     * Search attribute configuration.
+     */
+    @Valid
+    @NotNull
+    private SearchAttributeConfig searchAttributes = new SearchAttributeConfig();
+
+    /**
+     * Heartbeat configuration.
+     */
+    @Valid
+    @NotNull
+    private HeartbeatConfig heartbeat = new HeartbeatConfig();
+
+    /**
      * State persistence configuration.
      */
     @Data
@@ -526,5 +575,136 @@ public class WorkflowProperties {
          */
         @NotNull
         private Duration staleThreshold = Duration.ofMinutes(5);
+    }
+
+    /**
+     * Event sourcing configuration for durable execution.
+     */
+    @Data
+    public static class EventSourcingConfig {
+
+        /**
+         * Whether event sourcing is enabled (opt-in, not on by default).
+         */
+        private boolean enabled = false;
+
+        /**
+         * Number of events before a snapshot is taken.
+         */
+        @Min(1)
+        private int snapshotThreshold = 20;
+
+        /**
+         * Maximum number of events before triggering continue-as-new.
+         */
+        @Min(100)
+        private int maxEventsBeforeContinueAsNew = 1000;
+    }
+
+    /**
+     * Signal delivery configuration.
+     */
+    @Data
+    public static class SignalConfig {
+
+        /**
+         * Whether signal delivery is enabled.
+         */
+        private boolean enabled = true;
+
+        /**
+         * Maximum number of signals that can be buffered per workflow instance.
+         */
+        @Min(1)
+        private int bufferSize = 100;
+    }
+
+    /**
+     * Durable timer configuration.
+     */
+    @Data
+    public static class TimerConfig {
+
+        /**
+         * Whether durable timers are enabled.
+         */
+        private boolean enabled = true;
+
+        /**
+         * How often the timer scheduler polls for due timers.
+         */
+        @NotNull
+        private Duration pollInterval = Duration.ofSeconds(1);
+
+        /**
+         * Maximum number of timers to process per poll cycle.
+         */
+        @Min(1)
+        private int batchSize = 50;
+    }
+
+    /**
+     * Child workflow configuration.
+     */
+    @Data
+    public static class ChildWorkflowConfig {
+
+        /**
+         * Whether child workflows are enabled.
+         */
+        private boolean enabled = true;
+
+        /**
+         * Maximum depth of nested child workflows.
+         */
+        @Min(1)
+        private int maxDepth = 5;
+    }
+
+    /**
+     * Compensation (saga rollback) configuration.
+     */
+    @Data
+    public static class CompensationConfig {
+
+        /**
+         * Whether compensation is enabled.
+         */
+        private boolean enabled = true;
+
+        /**
+         * Default compensation policy (e.g., STRICT_SEQUENTIAL).
+         */
+        private String defaultPolicy = "STRICT_SEQUENTIAL";
+    }
+
+    /**
+     * Search attribute configuration.
+     */
+    @Data
+    public static class SearchAttributeConfig {
+
+        /**
+         * Whether search attributes are enabled.
+         */
+        private boolean enabled = true;
+    }
+
+    /**
+     * Heartbeat configuration.
+     */
+    @Data
+    public static class HeartbeatConfig {
+
+        /**
+         * Whether heartbeating is enabled.
+         */
+        private boolean enabled = true;
+
+        /**
+         * Minimum interval between heartbeat updates (throttle).
+         */
+        @NotNull
+        private Duration throttleInterval = Duration.ofSeconds(5);
     }
 }
