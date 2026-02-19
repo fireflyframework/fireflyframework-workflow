@@ -53,7 +53,7 @@ class WorkflowControllerTest {
 
     @BeforeEach
     void setUp() {
-        controller = new WorkflowController(workflowService);
+        controller = new WorkflowController(workflowService, null);
     }
 
     @Test

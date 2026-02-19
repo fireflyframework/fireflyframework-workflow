@@ -20,6 +20,7 @@ import org.fireflyframework.workflow.exception.StepExecutionException;
 import org.fireflyframework.workflow.exception.WorkflowNotFoundException;
 import org.fireflyframework.workflow.model.WorkflowDefinition;
 import org.fireflyframework.workflow.model.WorkflowStatus;
+import org.fireflyframework.workflow.rest.dto.SendSignalRequest;
 import org.fireflyframework.workflow.rest.dto.StartWorkflowRequest;
 import org.fireflyframework.workflow.rest.dto.StepStateResponse;
 import org.fireflyframework.workflow.rest.dto.SuspendWorkflowRequest;
@@ -28,13 +29,15 @@ import org.fireflyframework.workflow.rest.dto.WorkflowStateResponse;
 import org.fireflyframework.workflow.rest.dto.WorkflowStatusResponse;
 import org.fireflyframework.workflow.rest.dto.WorkflowTopologyResponse;
 import org.fireflyframework.workflow.service.WorkflowService;
+import org.fireflyframework.workflow.signal.SignalResult;
+import org.fireflyframework.workflow.signal.SignalService;
 import org.fireflyframework.workflow.service.WorkflowService.WorkflowResult;
 import org.fireflyframework.workflow.service.WorkflowService.WorkflowSummary;
 import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.lang.Nullable;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -57,15 +60,22 @@ import java.util.Map;
  *   <li>Cancelling workflows</li>
  *   <li>Retrying failed workflows</li>
  *   <li>Listing workflows</li>
+ *   <li>Sending signals to workflow instances</li>
  * </ul>
  */
 @Slf4j
 @RestController
 @RequestMapping("${firefly.workflow.api.base-path:/api/v1/workflows}")
-@RequiredArgsConstructor
 public class WorkflowController {
 
     private final WorkflowService workflowService;
+    @Nullable
+    private final SignalService signalService;
+
+    public WorkflowController(WorkflowService workflowService, @Nullable SignalService signalService) {
+        this.workflowService = workflowService;
+        this.signalService = signalService;
+    }
 
     /**
      * Lists all registered workflows.
@@ -353,6 +363,37 @@ public class WorkflowController {
         return workflowService.getWorkflowState(workflowId, instanceId)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.notFound().build());
+    }
+
+    // ==================== Signal Endpoints ====================
+
+    /**
+     * Sends an external signal to a workflow instance.
+     * <p>
+     * Signals allow external systems to communicate data or trigger state
+     * transitions in running workflows. If a step is waiting for this signal,
+     * it will be resumed.
+     * <p>
+     * Requires the event-sourced signal service to be configured.
+     */
+    @PostMapping("/{workflowId}/instances/{instanceId}/signal")
+    public Mono<ResponseEntity<SignalResult>> sendSignal(
+            @PathVariable String workflowId,
+            @PathVariable String instanceId,
+            @Valid @RequestBody SendSignalRequest request) {
+
+        if (signalService == null) {
+            log.warn("Signal endpoint called but SignalService is not configured");
+            return Mono.just(ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build());
+        }
+
+        log.info("Sending signal via API: workflowId={}, instanceId={}, signalName={}",
+                workflowId, instanceId, request.getSignalName());
+
+        return signalService.sendSignal(instanceId, request.getSignalName(), request.getPayload())
+                .map(ResponseEntity::ok)
+                .onErrorResume(WorkflowNotFoundException.class, e ->
+                        Mono.just(ResponseEntity.notFound().build()));
     }
 
     // ==================== Private Helper Methods ====================

@@ -33,6 +33,7 @@ import org.fireflyframework.workflow.rest.DeadLetterController;
 import org.fireflyframework.workflow.rest.WorkflowController;
 import org.fireflyframework.workflow.scheduling.WorkflowScheduler;
 import org.fireflyframework.workflow.service.WorkflowService;
+import org.fireflyframework.workflow.signal.SignalService;
 import org.fireflyframework.workflow.metrics.WorkflowMetrics;
 import org.fireflyframework.workflow.resilience.WorkflowResilience;
 import org.fireflyframework.workflow.state.CacheStepStateStore;
@@ -182,9 +183,11 @@ public class WorkflowEngineAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "firefly.workflow.api", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public WorkflowController workflowController(WorkflowService workflowService) {
-        log.info("Creating WorkflowController REST API");
-        return new WorkflowController(workflowService);
+    public WorkflowController workflowController(
+            WorkflowService workflowService,
+            @Nullable SignalService signalService) {
+        log.info("Creating WorkflowController REST API (signalService: {})", signalService != null);
+        return new WorkflowController(workflowService, signalService);
     }
 
     /**
