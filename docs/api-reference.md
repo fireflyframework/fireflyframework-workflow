@@ -411,6 +411,41 @@ GET /api/v1/workflows/{workflowId}/instances/{instanceId}/steps
 ]
 ```
 
+### Record Step Heartbeat
+
+Records a heartbeat for a long-running step, indicating it is still making progress. Requires durable execution to be enabled.
+
+```http
+POST /api/v1/workflows/{workflowId}/instances/{instanceId}/steps/{stepId}/heartbeat
+Content-Type: application/json
+
+{
+  "details": {
+    "lastIndex": 450,
+    "progress": 75
+  }
+}
+```
+
+**Request Body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `details` | object | No | Arbitrary progress data for resume on recovery |
+
+**Response (200 OK):**
+
+```json
+{
+  "instanceId": "inst-789",
+  "stepId": "process-large-dataset",
+  "recorded": true,
+  "timestamp": "2025-01-15T10:32:00Z"
+}
+```
+
+---
+
 ### Get Workflow State (Dashboard View)
 
 Gets comprehensive workflow state including all step tracking.
@@ -866,6 +901,37 @@ Flux<StepState> waiting = workflowEngine.findStepsWaitingForEvent(
 // Find step definitions by input event
 List<WorkflowStepMatch> matches = workflowEngine.findStepsByInputEvent(
     "order.validated"
+);
+```
+
+### Sending Signals (Durable Execution)
+
+```java
+// Send a named signal to a running workflow instance
+Mono<SignalResult> result = workflowEngine.signal(
+    instanceId,
+    "approval-received",
+    Map.of("approvedBy", "manager@company.com", "approved", true)
+);
+```
+
+### Executing Queries (Durable Execution)
+
+```java
+// Execute a named query (built-in or custom @WorkflowQuery)
+Mono<Map<String, Object>> result = workflowEngine.query(
+    instanceId,
+    "orderSummary",
+    Map.of()  // optional query arguments
+);
+```
+
+### Searching by Attributes (Durable Execution)
+
+```java
+// Search workflow instances by custom search attribute values
+Flux<WorkflowInstance> instances = workflowEngine.searchByAttributes(
+    Map.of("customerId", "CUST-123", "region", "us-east")
 );
 ```
 

@@ -501,26 +501,32 @@ graph TB
 
 ### Event History as Source of Truth
 
-The event store is the authoritative source for all workflow state. Every command on the `WorkflowAggregate` produces one or more domain events (~22 event types):
+The event store is the authoritative source for all workflow state. Every command on the `WorkflowAggregate` produces one or more domain events (22 event types):
 
-| Event | Trigger | Key Data |
-|-------|---------|----------|
-| `WorkflowStartedEvent` | Workflow begins | workflowId, definition snapshot, input |
-| `StepStartedEvent` | Step begins executing | stepId, input, attemptNumber |
-| `StepCompletedEvent` | Step succeeds | stepId, output, durationMs |
-| `StepFailedEvent` | Step fails | stepId, error, retryable |
-| `SignalReceivedEvent` | External signal arrives | signalName, payload |
-| `TimerFiredEvent` | Timer fires | timerId |
-| `ChildWorkflowSpawnedEvent` | Child created | childInstanceId, input |
-| `ChildWorkflowCompletedEvent` | Child finishes | childInstanceId, output |
-| `SideEffectRecordedEvent` | Non-deterministic capture | sideEffectId, value |
-| `HeartbeatRecordedEvent` | Step progress report | stepId, details |
-| `ContinueAsNewEvent` | History reset | newInput, previousRunOutput |
-| `CompensationStartedEvent` | Rollback begins | failedStepId, policy |
-| `SearchAttributeUpdatedEvent` | Attribute set | key, value |
-| `WorkflowCompletedEvent` | All steps done | output, durationMs |
-| `WorkflowFailedEvent` | Unrecoverable failure | error, failedStepId |
-| `WorkflowCancelledEvent` | User cancels | reason |
+| Category | Event | Trigger | Key Data |
+|----------|-------|---------|----------|
+| **Workflow Lifecycle** | `WorkflowStartedEvent` | Workflow execution initiated | workflowId, definition snapshot, input |
+| | `WorkflowCompletedEvent` | Workflow completed successfully | output, durationMs |
+| | `WorkflowFailedEvent` | Workflow failed with error | error, failedStepId |
+| | `WorkflowCancelledEvent` | Workflow cancelled | reason |
+| | `WorkflowSuspendedEvent` | Workflow suspended | reason, suspendedAt |
+| | `WorkflowResumedEvent` | Workflow resumed from suspension | resumedAt |
+| **Step** | `StepStartedEvent` | Step execution began | stepId, input, attemptNumber |
+| | `StepCompletedEvent` | Step completed successfully | stepId, output, durationMs |
+| | `StepFailedEvent` | Step failed with error | stepId, error, retryable |
+| | `StepSkippedEvent` | Step skipped (condition not met) | stepId, reason |
+| | `StepRetriedEvent` | Step retry attempt | stepId, attemptNumber, error |
+| **Signal** | `SignalReceivedEvent` | External signal received | signalName, payload |
+| **Timer** | `TimerRegisteredEvent` | Timer registered for future firing | timerId, fireAt, type |
+| | `TimerFiredEvent` | Timer fired | timerId |
+| **Child Workflow** | `ChildWorkflowSpawnedEvent` | Child workflow started | childInstanceId, childWorkflowId, input |
+| | `ChildWorkflowCompletedEvent` | Child workflow finished | childInstanceId, output |
+| **Side Effect & Heartbeat** | `SideEffectRecordedEvent` | Non-deterministic result captured | sideEffectId, value |
+| | `HeartbeatRecordedEvent` | Step heartbeat recorded | stepId, details |
+| **Lifecycle Management** | `ContinueAsNewEvent` | Workflow continued with fresh event history | newInput, previousRunOutput |
+| **Compensation** | `CompensationStartedEvent` | Compensation process initiated | failedStepId, policy |
+| | `CompensationStepCompletedEvent` | Individual compensation step completed | compensatedStepId, durationMs |
+| **Search Attribute** | `SearchAttributeUpdatedEvent` | Search attribute indexed | key, value |
 
 ### State Reconstruction from Events
 
@@ -584,6 +590,14 @@ The workflow engine reuses the full eventsourcing infrastructure:
 | `Outbox` | Reliable event publishing via transactional outbox pattern |
 | `Projections` | Materializes read models (timers, search attributes) |
 | `Optimistic Concurrency` | Prevents conflicting concurrent updates to the same aggregate |
+
+### WorkflowRecoveryService
+
+The `WorkflowRecoveryService` handles recovery of workflow instances after a process restart or crash. It scans for aggregates in non-terminal states and resumes their execution by replaying events to reconstruct state, then continuing from the last recorded step. This is a key component of the durable execution guarantee: no workflow is lost due to infrastructure failures.
+
+### Composite Waits (@WaitForAll / @WaitForAny)
+
+The `@WaitForAll` and `@WaitForAny` annotations allow combining multiple wait conditions on a single step. For example, a step can wait for both a signal AND a timer, or wait for either a signal OR a timer (whichever arrives first). These composite conditions are evaluated by the `CompositeWaitEvaluator`, which tracks the status of each individual condition and resolves the overall wait when the composition rule is satisfied. See [Advanced Features](advanced-features.md) for usage details.
 
 ### Cache as Read-Through Optimization
 

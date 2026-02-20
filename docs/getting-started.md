@@ -18,7 +18,7 @@ Add the dependency to your `pom.xml`:
 <dependency>
     <groupId>org.fireflyframework</groupId>
     <artifactId>fireflyframework-workflow-engine</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>26.02.06</version>
 </dependency>
 ```
 
@@ -449,6 +449,87 @@ firefly:
     api:
       enabled: true
       base-path: /api/workflows
+```
+
+## Enabling Durable Execution
+
+The durable execution engine adds Temporal.io-like capabilities including signals, timers, child workflows, compensation, and deterministic replay. This section covers the minimal setup required.
+
+### Prerequisites
+
+- `fireflyframework-eventsourcing` dependency
+- PostgreSQL database with R2DBC
+- Flyway for schema migrations
+
+Add the eventsourcing dependency to your `pom.xml`:
+
+```xml
+<dependency>
+    <groupId>org.fireflyframework</groupId>
+    <artifactId>fireflyframework-eventsourcing</artifactId>
+    <version>26.02.06</version>
+</dependency>
+```
+
+### Minimal Configuration
+
+```yaml
+firefly:
+  workflow:
+    eventsourcing:
+      enabled: true
+    signals:
+      enabled: true
+    timers:
+      enabled: true
+  eventsourcing:
+    enabled: true
+    store:
+      type: r2dbc
+
+spring:
+  r2dbc:
+    url: r2dbc:postgresql://localhost:5432/workflow_db
+    username: user
+    password: pass
+  flyway:
+    enabled: true
+    url: jdbc:postgresql://localhost:5432/workflow_db
+    user: user
+    password: pass
+```
+
+### Signal Example
+
+Signals allow external systems to send data to a running workflow. Use `@WaitForSignal` to pause a step until a named signal arrives:
+
+```java
+@Workflow(id = "approval-workflow")
+public class ApprovalWorkflow {
+
+    @WorkflowStep(id = "wait-for-approval")
+    @WaitForSignal(name = "approval", timeoutMs = 86400000) // 24h timeout
+    public StepResult waitForApproval(WorkflowContext ctx) {
+        SignalResult signal = ctx.consumeSignal("approval");
+        if (signal != null && "approved".equals(signal.getPayload())) {
+            return StepResult.success("Approved");
+        }
+        return StepResult.failure("Rejected or timed out");
+    }
+}
+```
+
+### Timer Example
+
+Durable timers survive process restarts and are persisted as domain events:
+
+```java
+@WorkflowStep(id = "scheduled-check")
+@WaitForTimer(duration = "PT1H") // Wait 1 hour
+public StepResult scheduledCheck(WorkflowContext ctx) {
+    // Executes after timer fires
+    return StepResult.success("Check completed");
+}
 ```
 
 ## Next Steps

@@ -1367,6 +1367,75 @@ Mono<Map<String, Object>> summary = workflowEngine.query(
 );
 ```
 
+### Composite Waits (@WaitForAll / @WaitForAny)
+
+Composite wait annotations allow combining multiple wait conditions on a single step. This is useful when a step needs to wait for a combination of signals, timers, or other conditions before proceeding.
+
+#### @WaitForAll
+
+`@WaitForAll` blocks the step until **all** specified conditions are satisfied. The step executes only when every condition has been met:
+
+```java
+@WorkflowStep(id = "process-after-all-approvals", dependsOn = {"submit-request"})
+@WaitForAll({
+    @WaitForSignal(name = "manager-approval", timeoutDuration = "P7D"),
+    @WaitForSignal(name = "finance-approval", timeoutDuration = "P7D")
+})
+public Mono<Map<String, Object>> processAfterAllApprovals(WorkflowContext ctx) {
+    Map<String, Object> managerApproval = ctx.getSignal("manager-approval");
+    Map<String, Object> financeApproval = ctx.getSignal("finance-approval");
+    return Mono.just(Map.of(
+        "managerApproved", managerApproval.get("approved"),
+        "financeApproved", financeApproval.get("approved")
+    ));
+}
+```
+
+You can also combine signals with timers. For example, wait for an approval signal AND a minimum delay:
+
+```java
+@WorkflowStep(id = "delayed-approval")
+@WaitForAll({
+    @WaitForSignal(name = "approval"),
+    @WaitForTimer(duration = "PT1H")  // Enforce a minimum 1-hour cooling period
+})
+public Mono<Map<String, Object>> delayedApproval(WorkflowContext ctx) {
+    return Mono.just(ctx.getSignal("approval"));
+}
+```
+
+#### @WaitForAny
+
+`@WaitForAny` blocks the step until **any one** of the specified conditions is satisfied. The step executes as soon as the first condition is met:
+
+```java
+@WorkflowStep(id = "wait-for-response", dependsOn = {"send-request"})
+@WaitForAny({
+    @WaitForSignal(name = "response-received"),
+    @WaitForTimer(duration = "PT24H")  // Timeout after 24 hours
+})
+public Mono<Map<String, Object>> handleResponse(WorkflowContext ctx) {
+    Map<String, Object> signal = ctx.getSignal("response-received");
+    if (signal != null) {
+        return Mono.just(Map.of("responseReceived", true, "data", signal));
+    }
+    // Timer fired first - treat as timeout
+    return Mono.just(Map.of("responseReceived", false, "timedOut", true));
+}
+```
+
+This pattern is especially useful for implementing timeout-or-response races, where you want to proceed with a fallback if a signal does not arrive within a time window.
+
+#### How Composite Waits Work
+
+Composite wait conditions are evaluated by the `CompositeWaitEvaluator`:
+
+1. When a step with `@WaitForAll` or `@WaitForAny` begins, the evaluator registers all individual conditions (signals, timers)
+2. As each condition is satisfied (signal received, timer fired), the evaluator re-checks the composition rule
+3. For `@WaitForAll`: the step proceeds when **every** condition is met
+4. For `@WaitForAny`: the step proceeds when **at least one** condition is met
+5. All condition states are persisted as domain events, ensuring correct behavior across replays
+
 ## Next Steps
 
 - [Getting Started](getting-started.md) - Basic tutorial

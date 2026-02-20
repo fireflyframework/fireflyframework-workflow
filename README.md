@@ -47,6 +47,20 @@ Built-in REST controllers expose workflow management endpoints for starting, sus
 - Resilience configuration with circuit breakers
 - Health indicator for workflow engine status
 
+### Durable Execution Engine
+
+- Event-sourced workflow state via `WorkflowAggregate` extending `AggregateRoot`
+- Signal delivery and consumption (`@WaitForSignal` annotation, `SignalService`)
+- Durable timers (duration-based, absolute, recurring via `@WaitForTimer`, `TimerSchedulerService`)
+- Child workflow orchestration (`@ChildWorkflow`, parent-child lifecycle, cascading cancellation)
+- Compensation orchestration (`@CompensationStep`, three policies: STRICT_SEQUENTIAL, BEST_EFFORT, SKIP)
+- Continue-as-new for long-running workflows (manual and automatic threshold)
+- Side effects with deterministic replay (`ctx.sideEffect()`)
+- Heartbeating for long-running steps (`ctx.heartbeat()`)
+- Search attributes for workflow discovery (`ctx.upsertSearchAttribute()`)
+- Built-in and custom workflow queries (`@WorkflowQuery`)
+- Optimistic concurrency with version-based conflict detection
+
 ## Requirements
 
 - Java 21+
@@ -104,6 +118,31 @@ firefly:
     metrics:
       enabled: true
     tracing:
+      enabled: true
+```
+
+### Durable Execution Configuration
+
+Durable execution features require `fireflyframework-eventsourcing` and a PostgreSQL database with R2DBC.
+
+```yaml
+# Durable Execution (requires fireflyframework-eventsourcing)
+firefly:
+  workflow:
+    eventsourcing:
+      enabled: true
+    signals:
+      enabled: true
+    timers:
+      enabled: true
+      poll-interval: 1s
+    child-workflows:
+      enabled: true
+    compensation:
+      enabled: true
+    search-attributes:
+      enabled: true
+    heartbeat:
       enabled: true
 ```
 
