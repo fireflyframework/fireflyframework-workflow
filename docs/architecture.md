@@ -1,642 +1,339 @@
-# Architecture Overview
+# Architecture
 
-This document describes the architecture of the Firefly Workflow Engine, including component diagrams, data flow, and integration points.
+This document describes the architecture of the Firefly Workflow Engine: its components, execution model, state management, and auto-configuration.
 
-## High-Level Architecture
+## System Architecture
 
-The workflow engine follows a layered architecture with clear separation of concerns:
-
-```mermaid
-graph TB
-    subgraph "Client Layer"
-        REST[REST API Controller]
-        EVENT[Event Listener]
-        PROG[Programmatic API]
-    end
-
-    subgraph "Core Engine"
-        WE[WorkflowEngine]
-        WX[WorkflowExecutor]
-        WR[WorkflowResilience]
-    end
-
-    subgraph "Cross-Cutting Concerns"
-        TRACE[WorkflowTracer<br/>OpenTelemetry]
-        METRICS[WorkflowMetrics<br/>Micrometer]
-        HEALTH[HealthIndicator]
-    end
-
-    subgraph "Infrastructure"
-        CACHE[(fireflyframework-cache<br/>Redis/Caffeine)]
-        EDA[fireflyframework-eda<br/>Kafka/RabbitMQ]
-    end
-
-    REST --> WE
-    EVENT --> WE
-    PROG --> WE
-    WE --> WX
-    WX --> WR
-    WX --> TRACE
-    WX --> METRICS
-    WE --> CACHE
-    WE --> EDA
-    WR --> WX
+```
+                         ┌──────────────────────────┐
+                         │    WorkflowController     │  REST API Layer
+                         │    DeadLetterController   │
+                         └────────────┬─────────────┘
+                                      │
+                         ┌────────────▼─────────────┐
+                         │     WorkflowService       │  Service Layer (DTO mapping)
+                         └────────────┬─────────────┘
+                                      │
+                         ┌────────────▼─────────────┐
+                         │     WorkflowEngine        │  Orchestration Facade
+                         └────────────┬─────────────┘
+                                      │
+           ┌──────────────────────────┼──────────────────────────┐
+           │                          │                          │
+┌──────────▼──────────┐  ┌───────────▼───────────┐  ┌──────────▼──────────────┐
+│  WorkflowRegistry    │  │  WorkflowExecutor      │  │  WorkflowEventPublisher  │
+│  (definitions store) │  │  (step execution)      │  │  (via fireflyframework-  │
+└─────────────────────┘  └───────────┬───────────┘  │   eda)                   │
+                                     │               └─────────────────────────┘
+                          ┌──────────▼──────────┐
+                          │  WorkflowTopology    │  DAG / Kahn's Algorithm
+                          └──────────┬──────────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                                             │
+┌─────────────▼───────────────┐          ┌─────────────────▼────────────────┐
+│  CacheWorkflowStateStore     │          │  EventSourcedWorkflowStateStore  │
+│  CacheStepStateStore         │          │  (opt-in, @Primary when enabled) │
+│  (default, requires          │          │  Uses: fireflyframework-         │
+│   CacheAdapter)              │          │   eventsourcing EventStore       │
+└──────────────────────────────┘          └──────────────────────────────────┘
 ```
 
-## Component Descriptions
+## Core Components
 
 ### WorkflowEngine
 
-The main facade providing high-level API for workflow operations:
+The main facade for all workflow operations. It delegates to the registry, executor, state store, and event publisher.
 
-- `startWorkflow()` - Start a new workflow instance
-- `getStatus()` - Get workflow instance status
-- `triggerStep()` - Trigger a specific step (choreography)
-- `cancelWorkflow()` - Cancel a running workflow
-- `retryWorkflow()` - Retry a failed workflow
-- `collectResult()` - Get the result of a completed workflow
-- `getWorkflowState()` - Get enriched workflow state with step details
-- `suspendWorkflow()` / `resumeWorkflow()` - Pause and resume workflows
-- `getStepState()` / `getStepStates()` - Query individual or all step states
-- `findInstances()` / `findActiveInstances()` / `findByCorrelationId()` - Instance discovery
-- `findWorkflowsByTriggerEvent()` / `findStepsWaitingForEvent()` - Event-based discovery
+**Key methods:**
 
-See the [API Reference](api-reference.md) for the full method list.
+| Method | Description |
+|--------|-------------|
+| `startWorkflow(workflowId, input, ...)` | Creates and executes a new workflow instance |
+| `getStatus(workflowId, instanceId)` | Returns the current workflow instance state |
+| `collectResult(workflowId, instanceId, resultType)` | Returns the output of a completed workflow |
+| `cancelWorkflow(workflowId, instanceId)` | Cancels a running workflow |
+| `retryWorkflow(workflowId, instanceId)` | Retries a failed workflow from the failed step |
+| `suspendWorkflow(workflowId, instanceId, reason)` | Suspends a running workflow |
+| `resumeWorkflow(workflowId, instanceId)` | Resumes a suspended workflow |
+| `triggerStep(workflowId, instanceId, stepId, input, triggeredBy)` | Triggers a specific step |
+| `getStepState(workflowId, instanceId, stepId)` | Returns step-level state (requires StepStateStore) |
+| `getStepStates(workflowId, instanceId)` | Returns all step states for an instance |
+| `getWorkflowState(workflowId, instanceId)` | Returns comprehensive workflow state (dashboard view) |
+| `findInstances(workflowId)` | Lists all instances of a workflow |
+| `findActiveInstances()` | Lists all running/waiting instances |
+| `findSuspendedInstances()` | Lists all suspended instances |
+| `findByCorrelationId(correlationId)` | Finds instances by correlation ID |
+| `registerWorkflow(definition)` | Registers a workflow definition |
+| `unregisterWorkflow(workflowId)` | Removes a workflow definition |
 
 ### WorkflowExecutor
 
-Executes workflow steps with resilience patterns:
+Executes workflow steps according to the topology. For each execution layer computed by `WorkflowTopology`, the executor:
 
-- Manages step execution order via topology-based layers
-- Handles parallel step execution within dependency layers
-- Evaluates SpEL conditions
-- Applies retry logic
-- Persists step and workflow state
-- Publishes step events
+1. Evaluates SpEL conditions on each step
+2. Applies resilience decorators (if `WorkflowResilience` is available)
+3. Invokes the step handler (annotation method or `StepHandler<T>` bean)
+4. Records step execution results
+5. Saves state via the state store
+6. Publishes step events
+7. Calls lifecycle callbacks (`@OnStepComplete`)
+
+The executor receives optional dependencies via constructor injection: `StepStateStore`, `WorkflowTracer`, `WorkflowMetrics`, `WorkflowResilience`, and `DeadLetterStore`.
+
+### WorkflowRegistry
+
+Stores and retrieves `WorkflowDefinition` instances. Supports:
+
+- Registration by workflow ID
+- Lookup by ID (latest version) or by ID + version
+- Lookup by trigger event type
+- Unregistration
+
+`WorkflowAspect` scans `@Workflow` annotated beans at startup and registers them with the registry.
 
 ### WorkflowTopology
 
-Manages the dependency graph (DAG) of workflow steps:
+Builds and validates the step dependency graph. Given a `WorkflowDefinition`, it:
 
-- Builds directed acyclic graph from `dependsOn` declarations
-- Validates dependencies exist and detects cycles
-- Computes execution layers using Kahn's algorithm
-- Enables parallel execution of independent steps
+1. **Builds the graph**: Creates adjacency lists for dependencies (`dependencyGraph`) and reverse dependencies (`reverseDependencyGraph`)
+2. **Validates**: Checks that all referenced step IDs exist and that no circular dependencies exist (DFS with recursion stack)
+3. **Computes execution layers** using Kahn's algorithm:
+   - Layer 0: Steps with no dependencies (root steps)
+   - Layer N: Steps whose dependencies are all in layers 0..N-1
+   - Steps within a layer are sorted by `order` for determinism
 
-### WorkflowResilience
+If no steps use `dependsOn`, falls back to order-based grouping where each unique `order` value becomes a layer.
 
-Decorates step execution with Resilience4j patterns:
+### WorkflowAspect
 
-- **Circuit Breaker**: Prevents cascading failures
-- **Rate Limiter**: Controls execution rate
-- **Bulkhead**: Limits concurrent executions
-- **Time Limiter**: Enforces timeouts
+A Spring AOP component that scans the application context for beans annotated with `@Workflow`. For each one, it:
 
-## Workflow Execution Flow
+1. Reads the `@Workflow` annotation attributes
+2. Scans methods for `@WorkflowStep`, `@OnStepComplete`, `@OnWorkflowComplete`, `@OnWorkflowError`
+3. Builds a `WorkflowDefinition` with `WorkflowStepDefinition` entries
+4. Registers the definition with `WorkflowRegistry`
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Engine as WorkflowEngine
-    participant Executor as WorkflowExecutor
-    participant Resilience as WorkflowResilience
-    participant Cache as State Store
-    participant Events as Event Publisher
+### WorkflowService
 
-    Client->>Engine: startWorkflow(workflowId, input)
-    Engine->>Engine: Generate instanceId
-    Engine->>Cache: Save initial state
-    Engine->>Executor: execute(definition, context)
+Service layer between the REST controller and `WorkflowEngine`. Handles:
 
-    loop For each step
-        Executor->>Executor: Evaluate condition
-        alt Condition passes
-            Executor->>Cache: Save step state (RUNNING)
-            Executor->>Resilience: decorateStep(mono)
-            Resilience->>Executor: Execute step handler
-            Executor->>Cache: Save step state (COMPLETED)
-            Executor->>Events: Publish step.completed
-        else Condition fails
-            Executor->>Cache: Save step state (SKIPPED)
-        end
-    end
+- DTO conversion (`WorkflowInstance` to `WorkflowStatusResponse`, etc.)
+- Wait-for-completion polling logic
+- Dry-run passthrough
 
-    Executor->>Cache: Save workflow state (COMPLETED)
-    Executor->>Events: Publish workflow.completed
-    Engine->>Client: Return WorkflowInstance
-```
+### WorkflowEventPublisher
 
-## Topology-Based Execution
+Publishes workflow lifecycle events using `fireflyframework-eda` `EventPublisherFactory`. Events are sent to the configured destination (`firefly.workflow.events.default-destination`, default: `"workflow-events"`).
 
-The workflow engine uses a **topology-based execution model** where steps are organized into execution layers based on their dependencies. This is the recommended approach for controlling step execution order.
+### WorkflowEventListener
 
-### Dependency Graph (DAG)
+Listens for incoming events and:
 
-Steps declare dependencies using the `dependsOn` attribute, forming a Directed Acyclic Graph (DAG):
+- Triggers workflows whose `triggerEventType` matches the event
+- Resumes steps whose `inputEventType` matches the event (step-level choreography)
+- Requires `StepStateStore` for step-level event handling
 
-```mermaid
-graph TD
-    subgraph "Workflow: order-fulfillment"
-        A[validate] --> B[check-inventory]
-        A --> C[process-payment]
-        B --> D[ship]
-        C --> D
-        D --> E[notify]
-    end
-```
+## State Management
 
-### Execution Layers
+### WorkflowStateStore Interface
 
-The `WorkflowTopology` class uses **Kahn's algorithm** to compute execution layers:
+The `WorkflowStateStore` interface defines the contract for persisting workflow instances:
 
-```mermaid
-graph LR
-    subgraph "Layer 0"
-        L0[validate]
-    end
-    subgraph "Layer 1 (parallel)"
-        L1A[check-inventory]
-        L1B[process-payment]
-    end
-    subgraph "Layer 2"
-        L2[ship]
-    end
-    subgraph "Layer 3"
-        L3[notify]
-    end
+| Method | Description |
+|--------|-------------|
+| `save(instance)` | Persists a workflow instance |
+| `save(instance, ttl)` | Persists with explicit TTL |
+| `findById(instanceId)` | Loads by instance ID |
+| `findByWorkflowAndInstanceId(workflowId, instanceId)` | Loads by both IDs |
+| `findByWorkflowId(workflowId)` | Lists instances for a workflow |
+| `findByStatus(status)` | Lists instances by status |
+| `findByWorkflowIdAndStatus(workflowId, status)` | Combined filter |
+| `findByCorrelationId(correlationId)` | Finds by correlation ID |
+| `findActiveInstances()` | Lists RUNNING/WAITING instances |
+| `findStaleInstances(maxAge)` | Finds stale instances for recovery |
+| `exists(instanceId)` | Checks existence |
+| `delete(instanceId)` | Deletes an instance |
+| `deleteByWorkflowId(workflowId)` | Deletes all instances for a workflow |
+| `updateStatus(instanceId, expected, newStatus)` | Atomic status transition |
+| `countByWorkflowId(workflowId)` | Count instances |
+| `countByWorkflowIdAndStatus(workflowId, status)` | Count by status |
+| `isHealthy()` | Health check |
 
-    L0 --> L1A
-    L0 --> L1B
-    L1A --> L2
-    L1B --> L2
-    L2 --> L3
-```
+### CacheWorkflowStateStore (Default)
 
-**Key Properties:**
-- **Layer 0**: Contains root steps (no dependencies)
-- **Subsequent Layers**: Steps whose dependencies are all in previous layers
-- **Parallel Execution**: Steps within the same layer can execute concurrently
-- **Deterministic Order**: Steps within a layer are sorted by `order` attribute
+Uses `fireflyframework-cache` `CacheAdapter` for persistence. Requires a `CacheAdapter` bean. Stores workflow instances as cache entries with configurable TTL and key prefix (`firefly.workflow.state.key-prefix`, default: `"workflow"`).
 
-### Topology Validation
+### EventSourcedWorkflowStateStore (Durable)
 
-The topology is validated during workflow registration:
+Created when `firefly.workflow.eventsourcing.enabled=true` and an `EventStore` bean is available. Marked with `@Primary` to override the cache-backed store.
 
-```mermaid
-sequenceDiagram
-    participant Registry as WorkflowRegistry
-    participant Topology as WorkflowTopology
-    participant Validator as Validation
+**How it works:**
 
-    Registry->>Topology: new WorkflowTopology(definition)
-    Topology->>Topology: buildGraph()
-    Registry->>Topology: validate()
-    Topology->>Validator: validateDependenciesExist()
-    alt Missing dependency
-        Validator-->>Registry: WorkflowValidationException
-    end
-    Topology->>Validator: validateNoCycles()
-    alt Cycle detected
-        Validator-->>Registry: WorkflowValidationException
-    end
-    Topology-->>Registry: Validation passed
-    Registry->>Registry: Register workflow
-```
+- `findById(instanceId)`: Loads the `WorkflowAggregate` by replaying its event stream from the `EventStore`, then converts to `WorkflowInstance`
+- `save(instance)`: Returns the instance as-is (state is managed via aggregate events, not direct saves)
+- `findByWorkflowId`, `findByStatus`, `findActiveInstances`, etc.: Return empty results (require read-side projections not yet built)
+- `delete(instanceId)`: Returns `false` (events are immutable)
+- `updateStatus(instanceId, expected, newStatus)`: Loads aggregate, validates expected status, applies transition command, saves aggregate
 
-**Validation Checks:**
-1. **Missing Dependencies**: All referenced step IDs must exist in the workflow
-2. **Cycle Detection**: No circular dependencies allowed (uses DFS with recursion stack)
+Additional aggregate-level methods:
 
-### Kahn's Algorithm Implementation
+| Method | Description |
+|--------|-------------|
+| `loadAggregate(aggregateId)` | Loads a `WorkflowAggregate` by replaying events |
+| `saveAggregate(aggregate)` | Appends uncommitted events with optimistic concurrency |
+| `toWorkflowInstance(aggregate)` | Converts aggregate state to `WorkflowInstance` |
 
-The algorithm builds execution layers as follows:
+## Model Classes
 
-1. Calculate in-degree (number of dependencies) for each step
-2. Add all steps with in-degree 0 to the first layer
-3. For each step in the current layer:
-   - Mark as processed
-   - Decrement in-degree of dependent steps
-4. Repeat until all steps are processed
+### WorkflowDefinition
 
-```java
-// Simplified algorithm
-while (processed.size() < totalSteps) {
-    List<Step> currentLayer = steps.stream()
-        .filter(s -> inDegree.get(s) == 0 && !processed.contains(s))
-        .collect(toList());
+A record containing the workflow blueprint:
 
-    layers.add(currentLayer);
+| Field | Type | Description |
+|-------|------|-------------|
+| `workflowId` | `String` | Unique identifier |
+| `name` | `String` | Human-readable name |
+| `description` | `String` | Description |
+| `version` | `String` | Version (default: `"1.0.0"`) |
+| `steps` | `List<WorkflowStepDefinition>` | Ordered step list |
+| `triggerMode` | `TriggerMode` | `SYNC`, `ASYNC`, or `BOTH` |
+| `triggerEventType` | `String` | Event type for async triggering |
+| `timeout` | `Duration` | Workflow timeout (default: 1h) |
+| `retryPolicy` | `RetryPolicy` | Default retry policy |
+| `metadata` | `Map<String, Object>` | Additional metadata |
+| `workflowBean` | `Object` | Bean instance (set by WorkflowAspect) |
+| `onStepCompleteMethod` | `Method` | Callback method |
+| `onWorkflowCompleteMethod` | `Method` | Callback method |
+| `onWorkflowErrorMethod` | `Method` | Callback method |
 
-    for (Step step : currentLayer) {
-        processed.add(step);
-        for (Step dependent : getDependents(step)) {
-            inDegree.put(dependent, inDegree.get(dependent) - 1);
-        }
-    }
-}
-```
+### WorkflowInstance
 
-### Backward Compatibility
+A record representing a running or completed workflow:
 
-If no steps have explicit dependencies, the engine falls back to **order-based execution**:
+| Field | Type | Description |
+|-------|------|-------------|
+| `instanceId` | `String` | Unique instance identifier |
+| `workflowId` | `String` | Definition ID |
+| `workflowName` | `String` | Workflow name |
+| `workflowVersion` | `String` | Version at start time |
+| `status` | `WorkflowStatus` | Current status |
+| `currentStepId` | `String` | Currently executing step |
+| `context` | `Map<String, Object>` | Shared context data |
+| `input` | `Map<String, Object>` | Original input |
+| `output` | `Object` | Final output |
+| `stepExecutions` | `List<StepExecution>` | Step execution records |
+| `errorMessage` | `String` | Error message (if failed) |
+| `errorType` | `String` | Error type (if failed) |
+| `correlationId` | `String` | Correlation ID |
+| `triggeredBy` | `String` | Trigger source |
+| `createdAt` | `Instant` | Creation timestamp |
+| `startedAt` | `Instant` | Start timestamp |
+| `completedAt` | `Instant` | Completion timestamp |
 
-```mermaid
-graph LR
-    subgraph "Order-Based (Legacy)"
-        O1[order=1] --> O2[order=2] --> O3[order=3]
-    end
-```
+### WorkflowStatus
 
-## Step-Level Choreography
+| Status | Terminal | Active | Can Suspend | Can Resume |
+|--------|----------|--------|-------------|------------|
+| `PENDING` | No | Yes | Yes | No |
+| `RUNNING` | No | Yes | Yes | No |
+| `WAITING` | No | Yes | Yes | No |
+| `SUSPENDED` | No | No | No | Yes |
+| `COMPLETED` | Yes | No | No | No |
+| `FAILED` | Yes | No | No | No |
+| `CANCELLED` | Yes | No | No | No |
+| `TIMED_OUT` | Yes | No | No | No |
 
-The engine supports step-level choreography where steps can be triggered independently:
+### StepExecution
 
-```mermaid
-graph LR
-    subgraph "Workflow Instance"
-        S1[Step 1<br/>validate]
-        S2[Step 2<br/>process]
-        S3[Step 3<br/>notify]
-    end
+A record representing the execution of a single step:
 
-    subgraph "Events"
-        E1((order.created))
-        E2((order.validated))
-        E3((order.processed))
-    end
-
-    E1 -->|triggers| S1
-    S1 -->|emits| E2
-    E2 -->|triggers| S2
-    S2 -->|emits| E3
-    E3 -->|triggers| S3
-```
-
-### Step State Persistence
-
-Each step maintains its own state independent of the workflow:
-
-```mermaid
-erDiagram
-    WORKFLOW_STATE ||--o{ STEP_STATE : contains
-
-    WORKFLOW_STATE {
-        string workflowId
-        string instanceId
-        string status
-        int totalSteps
-        set completedSteps
-        set failedSteps
-        set pendingSteps
-        string currentStepId
-        timestamp createdAt
-        timestamp updatedAt
-    }
-
-    STEP_STATE {
-        string workflowId
-        string instanceId
-        string stepId
-        string status
-        string triggeredBy
-        object input
-        object output
-        timestamp startedAt
-        timestamp completedAt
-        string errorMessage
-        int attemptNumber
-    }
-```
-
-## Cache Key Structure
-
-State is stored in the cache with the following key patterns:
-
-| Key Pattern | Description |
-|-------------|-------------|
-| `workflow:{workflowId}:{instanceId}` | Workflow instance data |
-| `workflow:state:{workflowId}:{instanceId}` | Enriched workflow state |
-| `workflow:step:{workflowId}:{instanceId}:{stepId}` | Individual step state |
-
-## Resilience4j Integration
-
-The resilience layer wraps step execution with multiple patterns:
-
-```mermaid
-graph LR
-    subgraph "Resilience Decorators"
-        CB[Circuit Breaker]
-        RL[Rate Limiter]
-        BH[Bulkhead]
-        TL[Time Limiter]
-    end
-
-    STEP[Step Execution] --> TL
-    TL --> BH
-    BH --> RL
-    RL --> CB
-    CB --> HANDLER[Step Handler]
-```
-
-### Circuit Breaker States
-
-```mermaid
-stateDiagram-v2
-    [*] --> CLOSED
-    CLOSED --> OPEN: Failure rate > threshold
-    OPEN --> HALF_OPEN: Wait duration elapsed
-    HALF_OPEN --> CLOSED: Permitted calls succeed
-    HALF_OPEN --> OPEN: Permitted calls fail
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| `executionId` | `String` | Execution identifier |
+| `stepId` | `String` | Step identifier |
+| `stepName` | `String` | Step name |
+| `status` | `StepStatus` | Step status |
+| `input` | `Map<String, Object>` | Step input |
+| `output` | `Object` | Step output |
+| `errorMessage` | `String` | Error message |
+| `errorType` | `String` | Error type |
+| `attemptNumber` | `int` | Retry attempt number |
+| `startedAt` | `Instant` | Start timestamp |
+| `completedAt` | `Instant` | Completion timestamp |
 
 ## Auto-Configuration
 
-The library uses Spring Boot auto-configuration:
+`WorkflowEngineAutoConfiguration` creates all beans conditionally. The table below shows each bean, its conditions, and dependencies.
 
-```mermaid
-graph TB
-    subgraph "Auto-Configuration Classes"
-        WAC[WorkflowAutoConfiguration]
-        WEAC[WorkflowEngineAutoConfiguration]
-        WRAC[WorkflowResilienceAutoConfiguration]
-    end
+| Bean | Class | Condition |
+|------|-------|-----------|
+| `workflowStateStore` | `CacheWorkflowStateStore` | `@ConditionalOnBean(CacheAdapter.class)` |
+| `stepStateStore` | `CacheStepStateStore` | `@ConditionalOnBean(CacheAdapter.class)` + `step-state.enabled=true` |
+| `workflowEventPublisher` | `WorkflowEventPublisher` | `@ConditionalOnBean(EventPublisherFactory.class)` |
+| `workflowRegistry` | `WorkflowRegistry` | Always |
+| `workflowExecutor` | `WorkflowExecutor` | Requires `WorkflowStateStore`, `WorkflowEventPublisher` |
+| `workflowEngine` | `WorkflowEngine` | Requires `WorkflowRegistry`, `WorkflowExecutor`, `WorkflowStateStore` |
+| `workflowEventListener` | `WorkflowEventListener` | `events.listen-enabled=true` (default: true) |
+| `workflowAspect` | `WorkflowAspect` | Always |
+| `workflowService` | `WorkflowService` | Always |
+| `eventSourcedWorkflowStateStore` | `EventSourcedWorkflowStateStore` | `@Primary`, requires `EventStore`, `eventsourcing.enabled=true` |
+| `signalService` | `SignalService` | Requires `EventSourcedWorkflowStateStore`, `signals.enabled=true` |
+| `workflowQueryService` | `WorkflowQueryService` | Requires `EventSourcedWorkflowStateStore` |
+| `workflowTimerProjection` | `WorkflowTimerProjection` | `timers.enabled=true` |
+| `timerSchedulerService` | `TimerSchedulerService` | Requires `WorkflowTimerProjection` + `EventSourcedWorkflowStateStore` |
+| `childWorkflowService` | `ChildWorkflowService` | Requires `EventSourcedWorkflowStateStore`, `child-workflows.enabled=true` |
+| `compensationOrchestrator` | `CompensationOrchestrator` | Requires `EventSourcedWorkflowStateStore`, `compensation.enabled=true` |
+| `searchAttributeProjection` | `SearchAttributeProjection` | `search-attributes.enabled=true` |
+| `workflowSearchService` | `WorkflowSearchService` | Requires `SearchAttributeProjection` + `EventSourcedWorkflowStateStore` |
+| `continueAsNewService` | `ContinueAsNewService` | Requires `EventSourcedWorkflowStateStore` |
+| `workflowController` | `WorkflowController` | `api.enabled=true` (default: true) |
+| `workflowEngineHealthIndicator` | `WorkflowEngineHealthIndicator` | `health-indicator-enabled=true` |
+| `workflowTaskScheduler` | `ThreadPoolTaskScheduler` | `scheduling.enabled=true` |
+| `workflowScheduler` | `WorkflowScheduler` | `scheduling.enabled=true` |
+| `deadLetterStore` | `CacheDeadLetterStore` | `@ConditionalOnBean(CacheAdapter.class)`, `dlq.enabled=true` |
+| `deadLetterService` | `DeadLetterService` | Requires `DeadLetterStore`, `dlq.enabled=true` |
+| `deadLetterController` | `DeadLetterController` | Requires `DeadLetterService`, `api.enabled=true` |
+| `workflowRecoveryService` | `WorkflowRecoveryService` | `recovery.enabled=true` |
 
-    subgraph "Beans Created"
-        WE[WorkflowEngine]
-        WX[WorkflowExecutor]
-        WR[WorkflowResilience]
-        WC[WorkflowController]
-        WM[WorkflowMetrics]
-        WT[WorkflowTracer]
-        WH[WorkflowHealthIndicator]
-        WEP[WorkflowEventPublisher]
-    end
+Additional auto-configuration classes:
 
-    WAC --> WE
-    WAC --> WX
-    WAC --> WC
-    WAC --> WM
-    WAC --> WT
-    WAC --> WH
-    WAC --> WEP
-    WEAC --> WE
-    WRAC --> WR
-```
+- `WorkflowMetricsAutoConfiguration` -- creates `WorkflowMetrics` when Micrometer is present
+- `WorkflowResilienceAutoConfiguration` -- creates `WorkflowResilience` when Resilience4j is present
+- `WorkflowTracingAutoConfiguration` -- creates `WorkflowTracer` when OpenTelemetry is present
 
-## Event Flow
+## Domain Events (Durable Execution)
 
-```mermaid
-graph TB
-    subgraph "Workflow Events"
-        WS[workflow.started]
-        WC[workflow.completed]
-        WF[workflow.failed]
-        WX[workflow.cancelled]
-    end
+When durable execution is enabled, the `WorkflowAggregate` produces 22 domain event types:
 
-    subgraph "Step Events"
-        SS[workflow.step.started]
-        SC[workflow.step.completed]
-        SF[workflow.step.failed]
-        SR[workflow.step.retrying]
-    end
-
-    subgraph "Custom Events"
-        CE[outputEventType<br/>e.g., order.validated]
-    end
-
-    START((Start)) --> WS
-    WS --> SS
-    SS --> SC
-    SC --> CE
-    SC --> SS
-    SS --> SF
-    SF --> SR
-    SR --> SS
-    SC --> WC
-    SF --> WF
-    CANCEL((Cancel)) --> WX
-```
-
-## Integration Points
-
-### fireflyframework-cache
-
-Used for state persistence:
-- Workflow instance state
-- Step execution state
-- Workflow state aggregation
-
-Supports:
-- Redis (production)
-- Caffeine (development/testing)
-
-### fireflyframework-eda
-
-Used for event publishing and listening:
-- Workflow lifecycle events
-- Step lifecycle events
-- Custom step output events
-- Workflow trigger events
-
-Supports:
-- Kafka
-- RabbitMQ
-- SNS/SQS
-- Application Events (in-memory)
-
-## Thread Model
-
-The workflow engine uses Project Reactor for non-blocking execution:
-
-```mermaid
-graph TB
-    subgraph "Request Thread"
-        REQ[HTTP Request]
-    end
-
-    subgraph "Reactor Schedulers"
-        BOUND[boundedElastic<br/>Blocking I/O]
-        PARALLEL[parallel<br/>CPU-bound]
-    end
-
-    subgraph "Execution"
-        STEP1[Step 1]
-        STEP2[Step 2]
-        STEP3[Step 3]
-    end
-
-    REQ --> STEP1
-    STEP1 -->|async| BOUND
-    STEP2 -->|async| BOUND
-    STEP3 -->|sync| PARALLEL
-```
-
-## Event Sourcing Architecture (Durable Execution)
-
-When durable execution is enabled (`firefly.workflow.eventsourcing.enabled: true`), the workflow engine uses an event-sourced persistence model built on **fireflyframework-eventsourcing**. This provides full durability, replay capability, and audit history for workflow instances.
-
-### WorkflowAggregate as AggregateRoot
-
-Each workflow instance is modeled as a `WorkflowAggregate` that extends `AggregateRoot` from fireflyframework-eventsourcing. All state changes are expressed as immutable domain events stored in the R2DBC event store.
-
-```mermaid
-graph TB
-    subgraph "WorkflowAggregate (extends AggregateRoot)"
-        STATE[State<br/>status, stepExecutions, context,<br/>pendingSignals, activeTimers,<br/>childWorkflows, searchAttributes]
-        COMMANDS[Commands<br/>start, completeStep, failStep,<br/>receiveSignal, fireTimer,<br/>spawnChildWorkflow, cancel]
-        HANDLERS[Event Handlers<br/>onWorkflowStarted, onStepCompleted,<br/>onSignalReceived, onTimerFired, ...]
-    end
-
-    subgraph "Event Store (R2DBC)"
-        EVENTS[(workflow_events)]
-        SNAPSHOTS[(workflow_snapshots)]
-    end
-
-    COMMANDS -->|emit| EVENTS
-    EVENTS -->|replay| HANDLERS
-    HANDLERS -->|mutate| STATE
-    STATE -->|periodic| SNAPSHOTS
-```
-
-### Event History as Source of Truth
-
-The event store is the authoritative source for all workflow state. Every command on the `WorkflowAggregate` produces one or more domain events (22 event types):
-
-| Category | Event | Trigger | Key Data |
-|----------|-------|---------|----------|
-| **Workflow Lifecycle** | `WorkflowStartedEvent` | Workflow execution initiated | workflowId, definition snapshot, input |
-| | `WorkflowCompletedEvent` | Workflow completed successfully | output, durationMs |
-| | `WorkflowFailedEvent` | Workflow failed with error | error, failedStepId |
-| | `WorkflowCancelledEvent` | Workflow cancelled | reason |
-| | `WorkflowSuspendedEvent` | Workflow suspended | reason, suspendedAt |
-| | `WorkflowResumedEvent` | Workflow resumed from suspension | resumedAt |
-| **Step** | `StepStartedEvent` | Step execution began | stepId, input, attemptNumber |
-| | `StepCompletedEvent` | Step completed successfully | stepId, output, durationMs |
-| | `StepFailedEvent` | Step failed with error | stepId, error, retryable |
-| | `StepSkippedEvent` | Step skipped (condition not met) | stepId, reason |
-| | `StepRetriedEvent` | Step retry attempt | stepId, attemptNumber, error |
-| **Signal** | `SignalReceivedEvent` | External signal received | signalName, payload |
-| **Timer** | `TimerRegisteredEvent` | Timer registered for future firing | timerId, fireAt, type |
-| | `TimerFiredEvent` | Timer fired | timerId |
-| **Child Workflow** | `ChildWorkflowSpawnedEvent` | Child workflow started | childInstanceId, childWorkflowId, input |
-| | `ChildWorkflowCompletedEvent` | Child workflow finished | childInstanceId, output |
-| **Side Effect & Heartbeat** | `SideEffectRecordedEvent` | Non-deterministic result captured | sideEffectId, value |
-| | `HeartbeatRecordedEvent` | Step heartbeat recorded | stepId, details |
-| **Lifecycle Management** | `ContinueAsNewEvent` | Workflow continued with fresh event history | newInput, previousRunOutput |
-| **Compensation** | `CompensationStartedEvent` | Compensation process initiated | failedStepId, policy |
-| | `CompensationStepCompletedEvent` | Individual compensation step completed | compensatedStepId, durationMs |
-| **Search Attribute** | `SearchAttributeUpdatedEvent` | Search attribute indexed | key, value |
-
-### State Reconstruction from Events
-
-The aggregate state is fully reconstructable from the event history. Each event type has a corresponding `on()` handler that performs a pure state mutation:
-
-```
-1. Load latest snapshot (if exists) → WorkflowAggregate at version N
-2. Load events from version N+1 → current
-3. Apply each event via on() handler → full current state
-4. Ready for new commands
-```
-
-```java
-// Simplified state reconstruction
-WorkflowAggregate aggregate = new WorkflowAggregate();
-
-// Apply snapshot (if available)
-if (snapshot != null) {
-    aggregate.restoreFromSnapshot(snapshot);
-}
-
-// Replay events since snapshot
-for (DomainEvent event : eventsSinceSnapshot) {
-    aggregate.apply(event);  // pure state mutation, no side effects
-}
-
-// Aggregate is now at current state, ready for commands
-aggregate.completeStep("validate", output);
-```
-
-### Snapshot Optimization
-
-To avoid replaying the entire event history on every load, the engine takes periodic snapshots of aggregate state:
-
-- **Default threshold**: Snapshot every 20 events (configurable via `firefly.workflow.eventsourcing.snapshot-threshold`)
-- **Storage**: Snapshots are stored in the `workflow_snapshots` table
-- **Reconstruction**: Load snapshot + replay only events since the snapshot
-
-```mermaid
-graph LR
-    subgraph "Without Snapshots"
-        E1[Event 1] --> E2[Event 2] --> E3[...] --> EN[Event N]
-    end
-
-    subgraph "With Snapshots"
-        S1[Snapshot @ v20] --> E21[Event 21] --> E22[Event 22] --> E23[...]
-    end
-```
-
-For long-running workflows that accumulate thousands of events, the `continue-as-new` mechanism resets the event history entirely (see [Advanced Features](advanced-features.md)).
-
-### Integration with fireflyframework-eventsourcing
-
-The workflow engine reuses the full eventsourcing infrastructure:
-
-| Component | Usage |
-|-----------|-------|
-| `AggregateRoot` | Base class for `WorkflowAggregate` |
-| `EventStore` | Persists domain events to R2DBC `workflow_events` table |
-| `SnapshotStore` | Persists snapshots to `workflow_snapshots` table |
-| `Outbox` | Reliable event publishing via transactional outbox pattern |
-| `Projections` | Materializes read models (timers, search attributes) |
-| `Optimistic Concurrency` | Prevents conflicting concurrent updates to the same aggregate |
-
-### WorkflowRecoveryService
-
-The `WorkflowRecoveryService` handles recovery of workflow instances after a process restart or crash. It scans for aggregates in non-terminal states and resumes their execution by replaying events to reconstruct state, then continuing from the last recorded step. This is a key component of the durable execution guarantee: no workflow is lost due to infrastructure failures.
-
-### Composite Waits (@WaitForAll / @WaitForAny)
-
-The `@WaitForAll` and `@WaitForAny` annotations allow combining multiple wait conditions on a single step. For example, a step can wait for both a signal AND a timer, or wait for either a signal OR a timer (whichever arrives first). These composite conditions are evaluated by the `CompositeWaitEvaluator`, which tracks the status of each individual condition and resolves the overall wait when the composition rule is satisfied. See [Advanced Features](advanced-features.md) for usage details.
-
-### Cache as Read-Through Optimization
-
-With event sourcing enabled, the existing fireflyframework-cache layer transitions from being the primary state store to a **read-through cache**:
-
-```mermaid
-graph LR
-    subgraph "Read Path"
-        API[REST API / Query] --> CACHE[(Cache<br/>Redis/Caffeine)]
-        CACHE -->|miss| ES[Event Store]
-        ES -->|reconstruct| AGG[WorkflowAggregate]
-        AGG -->|populate| CACHE
-    end
-
-    subgraph "Write Path"
-        CMD[Command] --> AGG2[WorkflowAggregate]
-        AGG2 -->|append events| ES2[Event Store]
-        AGG2 -->|invalidate/update| CACHE2[(Cache)]
-    end
-```
-
-- **Reads**: Cache is checked first; on miss, the aggregate is reconstructed from events and the cache is populated
-- **Writes**: Events are appended to the event store (source of truth), then the cache is updated or invalidated
-- **Existing cache-only workflows**: Continue to work unchanged when `eventsourcing.enabled` is `false` (the default)
-
-### Database Schema
-
-The durable execution engine adds the following R2DBC tables (managed via Flyway):
-
-| Table | Purpose |
-|-------|---------|
-| `workflow_events` | Domain events (uses eventsourcing's `events` table schema) |
-| `workflow_snapshots` | Aggregate snapshots (uses eventsourcing's `snapshots` table schema) |
-| `workflow_timers` | Timer projection (timerId, instanceId, fireAt, status) |
-| `workflow_search_attributes` | Search attribute projection (instanceId, attributes JSONB, indexed) |
+| # | Event | Category | Description |
+|---|-------|----------|-------------|
+| 1 | `WorkflowStartedEvent` | Lifecycle | Workflow execution started |
+| 2 | `WorkflowCompletedEvent` | Lifecycle | Workflow completed successfully |
+| 3 | `WorkflowFailedEvent` | Lifecycle | Workflow failed |
+| 4 | `WorkflowCancelledEvent` | Lifecycle | Workflow cancelled |
+| 5 | `WorkflowSuspendedEvent` | Lifecycle | Workflow suspended |
+| 6 | `WorkflowResumedEvent` | Lifecycle | Workflow resumed |
+| 7 | `StepStartedEvent` | Step | Step execution began |
+| 8 | `StepCompletedEvent` | Step | Step completed |
+| 9 | `StepFailedEvent` | Step | Step failed |
+| 10 | `StepSkippedEvent` | Step | Step skipped |
+| 11 | `StepRetriedEvent` | Step | Step retry |
+| 12 | `SignalReceivedEvent` | Signal | External signal received |
+| 13 | `TimerRegisteredEvent` | Timer | Timer scheduled |
+| 14 | `TimerFiredEvent` | Timer | Timer fired |
+| 15 | `ChildWorkflowSpawnedEvent` | Child | Child workflow started |
+| 16 | `ChildWorkflowCompletedEvent` | Child | Child workflow finished |
+| 17 | `SideEffectRecordedEvent` | Replay | Side effect value recorded |
+| 18 | `HeartbeatRecordedEvent` | Heartbeat | Step heartbeat |
+| 19 | `ContinueAsNewEvent` | Lifecycle | Workflow continued as new |
+| 20 | `CompensationStartedEvent` | Compensation | Compensation started |
+| 21 | `CompensationStepCompletedEvent` | Compensation | Compensation step done |
+| 22 | `SearchAttributeUpdatedEvent` | Search | Search attribute updated |
 
 ## Next Steps
 
-- [Getting Started](getting-started.md) - Step-by-step tutorial
-- [Advanced Features](advanced-features.md) - Resilience4j, choreography, and more
-- [Configuration Reference](configuration.md) - All configuration options
-- [API Reference](api-reference.md) - REST and Java API documentation
+- [Getting Started](getting-started.md) -- Setup and first workflow
+- [Configuration](configuration.md) -- Complete property reference
+- [API Reference](api-reference.md) -- REST and Java API
+- [Durable Execution](durable-execution.md) -- Event sourcing deep dive

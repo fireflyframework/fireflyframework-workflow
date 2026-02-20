@@ -5,67 +5,94 @@
 [![Java](https://img.shields.io/badge/Java-21%2B-orange.svg)](https://openjdk.org)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.x-green.svg)](https://spring.io/projects/spring-boot)
 
-> Workflow orchestration library with AOP-based definitions, state persistence, scheduling, and event-driven step execution.
+> Reactive workflow orchestration for Spring Boot with annotation-driven definitions, DAG-based step execution, cache-backed state persistence, and opt-in durable execution via event sourcing.
 
 ---
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Features](#features)
+- [Key Features](#key-features)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Configuration](#configuration)
+- [Architecture Overview](#architecture-overview)
+- [Two Execution Modes](#two-execution-modes)
+- [Configuration Summary](#configuration-summary)
 - [Documentation](#documentation)
-- [Contributing](#contributing)
 - [License](#license)
 
 ## Overview
 
-Firefly Framework Workflow Engine provides a lightweight, annotation-driven workflow orchestration system for reactive Spring Boot microservices. Workflows are defined using `@Workflow` and `@WorkflowStep` annotations, with automatic topology resolution, state persistence, and event-driven execution.
+`fireflyframework-workflow` is a workflow orchestration library for reactive Spring Boot microservices. Workflows are defined using `@Workflow` and `@WorkflowStep` annotations or built programmatically with `WorkflowDefinition.builder()`. Steps are organized into a directed acyclic graph (DAG) resolved via Kahn's algorithm, with parallel execution of independent steps within the same dependency layer.
 
-The engine supports step dependencies, retry policies, scheduled workflow execution, dead letter queues for failed steps, and lifecycle callbacks (`@OnStepComplete`, `@OnWorkflowComplete`, `@OnWorkflowError`). State is persisted through the Firefly cache module, enabling workflow resumption after service restarts.
+State is persisted through `fireflyframework-cache` (the default mode) or through `fireflyframework-eventsourcing` for durable execution (opt-in). The engine publishes lifecycle events through `fireflyframework-eda`, exposes REST endpoints for management and monitoring, and integrates with Resilience4j for per-step circuit breakers, rate limiters, bulkheads, and time limiters.
 
-Built-in REST controllers expose workflow management endpoints for starting, suspending, and monitoring workflows, along with dead letter queue management for error recovery.
+## Key Features
 
-## Features
+**Core Engine**
 
-- `@Workflow` and `@WorkflowStep` annotations for declarative workflow definitions
-- AOP-based workflow execution via `WorkflowAspect`
-- Workflow topology with step dependency resolution
-- Configurable retry policies per step
-- Step trigger modes: automatic, manual, event-driven
-- `@ScheduledWorkflow` for cron-based workflow scheduling
+- `@Workflow` / `@WorkflowStep` annotations for declarative definitions
+- `WorkflowDefinition.builder()` for programmatic definitions
+- DAG-based step execution with `dependsOn` and Kahn's algorithm
+- SpEL conditional steps (`#ctx`, `#input`, `#data` variables)
+- Step trigger modes: `EVENT`, `PROGRAMMATIC`, `BOTH`
+- Async parallel steps within the same dependency layer
 - Lifecycle callbacks: `@OnStepComplete`, `@OnWorkflowComplete`, `@OnWorkflowError`
-- Cache-backed state persistence for workflows and steps
-- Dead letter queue with `DeadLetterService` for failed step recovery
-- REST controllers for workflow management and dead letter operations
-- Workflow event publishing via EDA integration
-- Micrometer metrics for workflow execution tracking
-- OpenTelemetry tracing for distributed workflow visibility
-- Resilience configuration with circuit breakers
-- Health indicator for workflow engine status
+- `@ScheduledWorkflow` for cron, fixedDelay, and fixedRate scheduling
+- Dry-run mode for testing workflow configuration without side effects
 
-### Durable Execution Engine
+**State Management**
+
+- Cache-backed persistence via `fireflyframework-cache` `CacheAdapter` (default)
+- Configurable TTL for workflow instances and completed workflows
+- Step-level state tracking with `CacheStepStateStore`
+- Crash recovery via `WorkflowRecoveryService` with configurable stale threshold
+
+**Durable Execution (opt-in)**
 
 - Event-sourced workflow state via `WorkflowAggregate` extending `AggregateRoot`
-- Signal delivery and consumption (`@WaitForSignal` annotation, `SignalService`)
-- Durable timers (duration-based, absolute, recurring via `@WaitForTimer`, `TimerSchedulerService`)
-- Child workflow orchestration (`@ChildWorkflow`, parent-child lifecycle, cascading cancellation)
-- Compensation orchestration (`@CompensationStep`, three policies: STRICT_SEQUENTIAL, BEST_EFFORT, SKIP)
-- Continue-as-new for long-running workflows (manual and automatic threshold)
-- Side effects with deterministic replay (`ctx.sideEffect()`)
-- Heartbeating for long-running steps (`ctx.heartbeat()`)
-- Search attributes for workflow discovery (`ctx.upsertSearchAttribute()`)
-- Built-in and custom workflow queries (`@WorkflowQuery`)
+- 22 domain events covering the complete workflow lifecycle
+- Signals: `@WaitForSignal`, `SignalService.sendSignal()`, `SignalService.consumeSignal()`
+- Durable timers: `@WaitForTimer` with duration or absolute instant
+- Composite waits: `@WaitForAll` (join pattern), `@WaitForAny` (race pattern)
+- Child workflows: `@ChildWorkflow`, `ChildWorkflowService`
+- Compensation: `@CompensationStep`, `CompensationOrchestrator` (STRICT_SEQUENTIAL, BEST_EFFORT, SKIP)
+- Side effects with deterministic replay: `ctx.sideEffect()`
+- Heartbeats: `ctx.heartbeat()` for progress tracking
+- Search attributes: `WorkflowSearchService`, `SearchAttributeProjection`
+- 10 built-in queries: `WorkflowQueryService`
+- Continue-as-new: `ContinueAsNewService` for unbounded workflows
+- Snapshots: `WorkflowSnapshot` for optimized replay
 - Optimistic concurrency with version-based conflict detection
+
+**REST API**
+
+- Full CRUD for workflows and instances at `/api/v1/workflows`
+- Topology endpoint for DAG visualization
+- Signal, query, and search endpoints (require durable execution)
+- Dead Letter Queue management endpoints
+
+**Resilience**
+
+- Per-step Resilience4j integration: CircuitBreaker, RateLimiter, Bulkhead, TimeLimiter
+- Application order: TimeLimiter -> Bulkhead -> RateLimiter -> CircuitBreaker
+- Dead Letter Queue with auto-save on failure and configurable replay
+
+**Observability**
+
+- Micrometer metrics for workflow and step execution
+- OpenTelemetry tracing with span propagation
+- Spring Boot Actuator health indicator
 
 ## Requirements
 
 - Java 21+
 - Spring Boot 3.x
 - Maven 3.9+
+- `fireflyframework-cache` (required for default cache-backed mode)
+- `fireflyframework-eda` (required for event publishing)
+- `fireflyframework-eventsourcing` (required only for durable execution mode)
 
 ## Installation
 
@@ -77,88 +104,158 @@ Built-in REST controllers expose workflow management endpoints for starting, sus
 </dependency>
 ```
 
+The `fireflyframework-cache` and `fireflyframework-eda` dependencies are transitively included. You must configure a `CacheAdapter` bean for state persistence to work. See [Getting Started](docs/getting-started.md) for cache setup instructions.
+
 ## Quick Start
 
 ```java
-import org.fireflyframework.workflow.annotation.*;
+@Workflow(id = "order-processing", name = "Order Processing")
+public class OrderProcessingWorkflow {
 
-@Workflow(name = "order-fulfillment")
-@Component
-public class OrderFulfillmentWorkflow {
-
-    @WorkflowStep(name = "validate-order", order = 1)
-    public Mono<ValidationResult> validate(WorkflowContext context) {
-        return orderValidator.validate(context.get("orderId"));
+    @WorkflowStep(id = "validate", name = "Validate Order", order = 1)
+    public Mono<ValidationResult> validate(WorkflowContext ctx) {
+        String orderId = ctx.getInput("orderId", String.class);
+        return orderValidator.validate(orderId);
     }
 
-    @WorkflowStep(name = "reserve-inventory", order = 2, retryPolicy = @RetryPolicy(maxAttempts = 3))
-    public Mono<ReservationResult> reserve(WorkflowContext context) {
-        return inventoryService.reserve(context.get("orderId"));
+    @WorkflowStep(id = "charge", name = "Charge Payment", order = 2,
+                   dependsOn = {"validate"})
+    public Mono<PaymentResult> charge(WorkflowContext ctx) {
+        ValidationResult validation = ctx.getStepOutput("validate", ValidationResult.class);
+        return paymentService.charge(validation.amount());
+    }
+
+    @WorkflowStep(id = "fulfill", name = "Fulfill Order", order = 3,
+                   dependsOn = {"charge"})
+    public Mono<FulfillmentResult> fulfill(WorkflowContext ctx) {
+        return fulfillmentService.ship(ctx.getInput("orderId", String.class));
     }
 
     @OnWorkflowComplete
-    public Mono<Void> onComplete(WorkflowContext context) {
-        return notificationService.notifyOrderReady(context.get("orderId"));
+    public void onComplete(WorkflowContext ctx, WorkflowInstance instance) {
+        log.info("Order {} completed", instance.instanceId());
     }
 }
 ```
 
-## Configuration
+Start the workflow programmatically or via REST API:
+
+```java
+// Programmatic
+workflowEngine.startWorkflow("order-processing", Map.of("orderId", "ORD-123"))
+    .subscribe(instance -> log.info("Started: {}", instance.instanceId()));
+
+// REST API
+// POST /api/v1/workflows/order-processing/start
+// { "input": { "orderId": "ORD-123" } }
+```
+
+## Architecture Overview
+
+```
+                    ┌─────────────────────┐
+                    │  WorkflowController  │  REST API
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │   WorkflowService    │  Service Layer
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │   WorkflowEngine     │  Orchestration Facade
+                    └──────────┬──────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              │                │                │
+   ┌──────────▼───┐  ┌────────▼────────┐  ┌───▼──────────────┐
+   │  Workflow     │  │  Workflow       │  │  WorkflowEvent    │
+   │  Registry     │  │  Executor      │  │  Publisher        │
+   └──────────────┘  └────────┬────────┘  └──────────────────┘
+                              │
+                   ┌──────────▼──────────┐
+                   │  WorkflowTopology   │  DAG + Kahn's Algorithm
+                   └──────────┬──────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              │                               │
+   ┌──────────▼──────────┐      ┌─────────────▼──────────────┐
+   │ CacheWorkflow       │      │ EventSourcedWorkflow       │
+   │ StateStore           │      │ StateStore                  │
+   │ (default)            │      │ (durable, opt-in)           │
+   └──────────────────────┘      └────────────────────────────┘
+   Uses: fireflyframework-cache   Uses: fireflyframework-eventsourcing
+```
+
+## Two Execution Modes
+
+### Cache Mode (Default)
+
+The default execution mode uses `fireflyframework-cache` for state persistence. Workflow instances are stored as cache entries with configurable TTL. This mode is lightweight and suitable for most use cases.
+
+**Requirements:** A `CacheAdapter` bean must be available (from `fireflyframework-cache`).
 
 ```yaml
 firefly:
+  cache:
+    enabled: true
   workflow:
-    state-store:
-      type: cache
-    dead-letter:
-      enabled: true
-      max-retries: 5
-    scheduling:
-      enabled: true
-    metrics:
-      enabled: true
-    tracing:
-      enabled: true
+    enabled: true
+    state:
+      default-ttl: 7d
+      completed-ttl: 1d
 ```
 
-### Durable Execution Configuration
+### Durable Execution Mode (Opt-in)
 
-Durable execution features require `fireflyframework-eventsourcing` and a PostgreSQL database with R2DBC.
+Durable execution uses `fireflyframework-eventsourcing` to persist workflow state as an event stream. Every state transition is captured as a domain event, enabling replay, audit trails, and crash recovery from the event log.
+
+**Requirements:** An `EventStore` bean must be available (from `fireflyframework-eventsourcing`) and `firefly.workflow.eventsourcing.enabled` must be set to `true`.
 
 ```yaml
-# Durable Execution (requires fireflyframework-eventsourcing)
 firefly:
   workflow:
     eventsourcing:
       enabled: true
-    signals:
-      enabled: true
-    timers:
-      enabled: true
-      poll-interval: 1s
-    child-workflows:
-      enabled: true
-    compensation:
-      enabled: true
-    search-attributes:
-      enabled: true
-    heartbeat:
-      enabled: true
+      snapshot-threshold: 20
 ```
+
+> **Important:** Durable execution is OFF by default (`enabled: false`). Some query methods on `EventSourcedWorkflowStateStore` return empty results (e.g., `findByWorkflowId`, `findByStatus`, `findActiveInstances`) because they require read-side projections that are not yet built. Individual instance lookup via `findById` works by replaying the aggregate's event stream.
+
+## Configuration Summary
+
+```yaml
+firefly:
+  workflow:
+    enabled: true                    # Enable the workflow engine (default: true)
+    default-timeout: 1h              # Workflow timeout (default: 1h)
+    default-step-timeout: 5m         # Step timeout (default: 5m)
+    metrics-enabled: true            # Micrometer metrics (default: true)
+    health-enabled: true             # Actuator health indicator (default: true)
+
+    state:
+      default-ttl: 7d               # Instance TTL (default: 7d)
+      completed-ttl: 1d             # Completed instance TTL (default: 1d)
+      key-prefix: workflow           # Cache key prefix (default: workflow)
+
+    api:
+      enabled: true                  # REST API (default: true)
+      base-path: /api/v1/workflows   # Base path (default: /api/v1/workflows)
+
+    eventsourcing:
+      enabled: false                 # Durable execution (default: false)
+```
+
+For the complete configuration reference, see [Configuration](docs/configuration.md).
 
 ## Documentation
 
-Additional documentation is available in the [docs/](docs/) directory:
-
-- [Getting Started](docs/getting-started.md)
-- [Architecture](docs/architecture.md)
-- [Configuration](docs/configuration.md)
-- [Api Reference](docs/api-reference.md)
-- [Advanced Features](docs/advanced-features.md)
-
-## Contributing
-
-Contributions are welcome. Please read the [CONTRIBUTING.md](CONTRIBUTING.md) guide for details on our code of conduct, development process, and how to submit pull requests.
+- [Getting Started](docs/getting-started.md) -- Prerequisites, cache setup, first workflow, programmatic definitions
+- [Architecture](docs/architecture.md) -- Components, execution model, state management, auto-configuration
+- [Configuration](docs/configuration.md) -- Complete property reference with defaults
+- [API Reference](docs/api-reference.md) -- REST endpoints, Java API, annotations
+- [Advanced Features](docs/advanced-features.md) -- DAG execution, resilience, scheduling, DLQ, dry-run
+- [Durable Execution](docs/durable-execution.md) -- Event sourcing, signals, timers, child workflows, compensation
+- [Testing](docs/testing.md) -- Unit testing, integration testing, Testcontainers setup
 
 ## License
 

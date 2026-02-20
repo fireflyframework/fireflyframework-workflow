@@ -4,16 +4,9 @@ This document provides a complete reference for the REST API and Java API of the
 
 ## REST API
 
-The REST API is available at the configured base path (default: `/api/v1/workflows`).
+All endpoints are served at the configured base path (default: `/api/v1/workflows`). The base path is set by `firefly.workflow.api.base-path`.
 
-### Base Path Configuration
-
-```yaml
-firefly:
-  workflow:
-    api:
-      base-path: /api/v1/workflows
-```
+The REST API is exposed by `WorkflowController` and `DeadLetterController`. The controller is created conditionally by `WorkflowEngineAutoConfiguration` when `firefly.workflow.api.enabled` is `true` (the default).
 
 ---
 
@@ -27,7 +20,7 @@ Lists all registered workflow definitions.
 GET /api/v1/workflows
 ```
 
-**Response:**
+**Response (200 OK):**
 
 ```json
 [
@@ -44,13 +37,13 @@ GET /api/v1/workflows
 
 ### Get Workflow Definition
 
-Gets details of a specific workflow definition.
+Returns the full definition of a specific workflow, including all steps.
 
 ```http
 GET /api/v1/workflows/{workflowId}
 ```
 
-**Response:**
+**Response (200 OK):**
 
 ```json
 {
@@ -64,210 +57,24 @@ GET /api/v1/workflows/{workflowId}
       "stepId": "validate",
       "name": "Validate Order",
       "dependsOn": [],
-      "triggerMode": "EVENT",
-      "async": false
-    },
-    {
-      "stepId": "process-payment",
-      "name": "Process Payment",
-      "dependsOn": ["validate"],
-      "triggerMode": "EVENT",
+      "triggerMode": "BOTH",
       "async": false
     }
   ]
 }
 ```
 
-### Start Workflow
-
-Starts a new workflow instance.
-
-```http
-POST /api/v1/workflows/{workflowId}/start
-Content-Type: application/json
-
-{
-  "input": {
-    "orderId": "ORD-123",
-    "amount": 99.99
-  },
-  "correlationId": "corr-456",
-  "waitForCompletion": false,
-  "waitTimeoutMs": 30000
-}
-```
-
-**Request Body:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `input` | object | No | Input data for the workflow |
-| `correlationId` | string | No | Correlation ID for tracking |
-| `waitForCompletion` | boolean | No | Wait for workflow to complete |
-| `waitTimeoutMs` | long | No | Timeout when waiting (default: 30000) |
-| `dryRun` | boolean | No | Run without side effects (default: false) |
-
-**Response (201 Created):**
-
-```json
-{
-  "instanceId": "inst-789",
-  "workflowId": "order-processing",
-  "status": "RUNNING",
-  "currentStepId": "validate",
-  "completedSteps": 0,
-  "totalSteps": 3,
-  "createdAt": "2025-01-15T10:30:00Z",
-  "startedAt": "2025-01-15T10:30:00Z"
-}
-```
-
----
-
-## Instance Endpoints
-
-### Get Instance Status
-
-Gets the status of a workflow instance.
-
-```http
-GET /api/v1/workflows/{workflowId}/instances/{instanceId}/status
-```
-
-**Response:**
-
-```json
-{
-  "instanceId": "inst-789",
-  "workflowId": "order-processing",
-  "status": "COMPLETED",
-  "currentStepId": null,
-  "completedSteps": 3,
-  "totalSteps": 3,
-  "createdAt": "2025-01-15T10:30:00Z",
-  "startedAt": "2025-01-15T10:30:00Z",
-  "completedAt": "2025-01-15T10:30:05Z"
-}
-```
-
-### Collect Result
-
-Collects the result of a completed workflow.
-
-```http
-GET /api/v1/workflows/{workflowId}/instances/{instanceId}/collect
-```
-
-**Response (200 OK - Completed):**
-
-```json
-{
-  "status": "COMPLETED",
-  "result": {
-    "orderId": "ORD-123",
-    "processed": true
-  }
-}
-```
-
-**Response (202 Accepted - Still Running):**
-
-```json
-{
-  "status": "RUNNING",
-  "message": "Workflow is still running"
-}
-```
-
-### Cancel Workflow
-
-Cancels a running workflow instance.
-
-```http
-POST /api/v1/workflows/{workflowId}/instances/{instanceId}/cancel
-```
-
-**Response:**
-
-```json
-{
-  "instanceId": "inst-789",
-  "workflowId": "order-processing",
-  "status": "CANCELLED"
-}
-```
-
-### Retry Workflow
-
-Retries a failed workflow from the failed step.
-
-```http
-POST /api/v1/workflows/{workflowId}/instances/{instanceId}/retry
-```
-
-**Response:**
-
-```json
-{
-  "instanceId": "inst-789",
-  "workflowId": "order-processing",
-  "status": "RUNNING",
-  "currentStepId": "process-payment"
-}
-```
-
-### Suspend Workflow
-
-Suspends a running workflow. Useful during incidents or downstream outages.
-
-```http
-POST /api/v1/workflows/{workflowId}/instances/{instanceId}/suspend
-Content-Type: application/json
-
-{
-  "reason": "Downstream service outage"
-}
-```
-
-**Response:**
-
-```json
-{
-  "instanceId": "inst-789",
-  "workflowId": "order-processing",
-  "status": "SUSPENDED",
-  "suspendedAt": "2025-01-15T10:35:00Z",
-  "suspendReason": "Downstream service outage"
-}
-```
-
-### Resume Workflow
-
-Resumes a suspended workflow.
-
-```http
-POST /api/v1/workflows/{workflowId}/instances/{instanceId}/resume
-```
-
-**Response:**
-
-```json
-{
-  "instanceId": "inst-789",
-  "workflowId": "order-processing",
-  "status": "RUNNING"
-}
-```
+**Response (404 Not Found):** Workflow definition not found.
 
 ### Get Workflow Topology
 
-Gets the workflow DAG (nodes and edges) for visualization with React Flow or Mermaid.js.
+Returns the DAG structure (nodes and edges) for visualization with React Flow or Mermaid.js.
 
 ```http
 GET /api/v1/workflows/{workflowId}/topology
 ```
 
-**Response:**
+**Response (200 OK):**
 
 ```json
 {
@@ -306,19 +113,187 @@ GET /api/v1/workflows/{workflowId}/topology
 }
 ```
 
-### Get Instance Topology
+### Start Workflow
 
-Gets the topology with step execution status for progress visualization.
+Starts a new workflow instance.
 
 ```http
-GET /api/v1/workflows/{workflowId}/instances/{instanceId}/topology
+POST /api/v1/workflows/{workflowId}/start
+Content-Type: application/json
+
+{
+  "input": {
+    "orderId": "ORD-123",
+    "amount": 99.99
+  },
+  "correlationId": "corr-456",
+  "waitForCompletion": false,
+  "waitTimeoutMs": 30000,
+  "dryRun": false
+}
 ```
 
-**Response:** Same as above, but `status` fields are populated with step execution status.
+**Request Body (`StartWorkflowRequest`):**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `input` | `Map<String, Object>` | No | `{}` | Input data for the workflow |
+| `correlationId` | `String` | No | `null` | Correlation ID for distributed tracing |
+| `waitForCompletion` | `boolean` | No | `false` | Whether to wait for workflow to complete before responding |
+| `waitTimeoutMs` | `long` | No | `30000` | Timeout in ms when `waitForCompletion` is `true` |
+| `dryRun` | `boolean` | No | `false` | Run workflow without side effects |
+
+The request body is optional. Sending an empty `POST` starts the workflow with no input.
+
+**Response (201 Created):**
+
+```json
+{
+  "instanceId": "a1b2c3d4-...",
+  "workflowId": "order-processing",
+  "status": "RUNNING",
+  "currentStepId": "validate",
+  "completedSteps": 0,
+  "totalSteps": 3,
+  "createdAt": "2026-02-20T10:00:00Z",
+  "startedAt": "2026-02-20T10:00:00Z"
+}
+```
+
+**Response (404 Not Found):** Workflow definition not found.
+
+---
+
+## Instance Endpoints
+
+### Get Instance Status
+
+```http
+GET /api/v1/workflows/{workflowId}/instances/{instanceId}/status
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "instanceId": "a1b2c3d4-...",
+  "workflowId": "order-processing",
+  "status": "COMPLETED",
+  "currentStepId": null,
+  "completedSteps": 3,
+  "totalSteps": 3,
+  "createdAt": "2026-02-20T10:00:00Z",
+  "startedAt": "2026-02-20T10:00:00Z",
+  "completedAt": "2026-02-20T10:00:05Z"
+}
+```
+
+### Collect Result
+
+Collects the result of a completed workflow. Returns different responses depending on the workflow status.
+
+```http
+GET /api/v1/workflows/{workflowId}/instances/{instanceId}/collect
+```
+
+**Response (200 OK -- Completed):**
+
+```json
+{
+  "status": "COMPLETED",
+  "result": {
+    "orderId": "ORD-123",
+    "processed": true
+  }
+}
+```
+
+**Response (202 Accepted -- Still Running):**
+
+```json
+{
+  "status": "RUNNING",
+  "message": "Workflow is still running"
+}
+```
+
+**Response (500 -- Failed or Cancelled):**
+
+```json
+{
+  "status": "FAILED",
+  "error": "Payment gateway timeout"
+}
+```
+
+### Cancel Workflow
+
+Cancels a running workflow instance. Only non-terminal workflows can be cancelled.
+
+```http
+POST /api/v1/workflows/{workflowId}/instances/{instanceId}/cancel
+```
+
+**Response (200 OK):** Returns the updated `WorkflowStatusResponse` with status `CANCELLED`.
+
+**Response (400 Bad Request):** Workflow is already in a terminal state.
+
+### Retry Workflow
+
+Retries a failed workflow from the failed step. Only `FAILED` workflows can be retried.
+
+```http
+POST /api/v1/workflows/{workflowId}/instances/{instanceId}/retry
+```
+
+**Response (200 OK):** Returns the updated `WorkflowStatusResponse` with status `RUNNING`.
+
+**Response (400 Bad Request):** Workflow is not in `FAILED` status.
+
+### Suspend Workflow
+
+Suspends a running or waiting workflow. Useful during incidents or downstream outages.
+
+```http
+POST /api/v1/workflows/{workflowId}/instances/{instanceId}/suspend
+Content-Type: application/json
+
+{
+  "reason": "Downstream service outage"
+}
+```
+
+The request body is optional. If omitted, no reason is recorded.
+
+**Response (200 OK):** Returns the updated `WorkflowStatusResponse` with status `SUSPENDED`.
+
+**Response (400 Bad Request):** Workflow cannot be suspended in its current status.
+
+### Resume Workflow
+
+Resumes a suspended workflow. Execution continues from where it was suspended.
+
+```http
+POST /api/v1/workflows/{workflowId}/instances/{instanceId}/resume
+```
+
+**Response (200 OK):** Returns the updated `WorkflowStatusResponse` with status `RUNNING`.
+
+**Response (400 Bad Request):** Workflow is not in `SUSPENDED` status.
+
+### List Suspended Instances
+
+Lists all suspended workflow instances across all workflow definitions.
+
+```http
+GET /api/v1/workflows/suspended
+```
+
+**Response (200 OK):** Array of `WorkflowStatusResponse` objects.
 
 ### List Instances
 
-Lists all instances of a workflow.
+Lists all instances of a specific workflow, optionally filtered by status.
 
 ```http
 GET /api/v1/workflows/{workflowId}/instances
@@ -329,7 +304,17 @@ GET /api/v1/workflows/{workflowId}/instances?status=RUNNING
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `status` | string | Filter by status (PENDING, RUNNING, COMPLETED, FAILED, CANCELLED) |
+| `status` | `WorkflowStatus` | Filter by status (optional) |
+
+### Get Instance Topology
+
+Returns the DAG structure with step execution statuses populated for progress visualization.
+
+```http
+GET /api/v1/workflows/{workflowId}/instances/{instanceId}/topology
+```
+
+**Response:** Same structure as the workflow topology endpoint, but `status` fields on nodes are populated with the actual step execution status.
 
 ---
 
@@ -337,7 +322,7 @@ GET /api/v1/workflows/{workflowId}/instances?status=RUNNING
 
 ### Trigger Step
 
-Triggers execution of a specific step (step-level choreography).
+Triggers execution of a specific step. This supports step-level choreography where individual steps are invoked independently.
 
 ```http
 POST /api/v1/workflows/{workflowId}/instances/{instanceId}/steps/{stepId}/trigger
@@ -350,116 +335,65 @@ Content-Type: application/json
 }
 ```
 
-**Response:**
+The request body is optional.
 
-```json
-{
-  "instanceId": "inst-789",
-  "workflowId": "order-processing",
-  "status": "RUNNING",
-  "currentStepId": "process-payment"
-}
-```
+**Response (200 OK):** Returns the updated `WorkflowStatusResponse`.
+
+**Response (400 Bad Request):** Step execution failed (`StepExecutionException`).
+
+**Response (404 Not Found):** Workflow or instance not found.
 
 ### Get Step State
 
-Gets the state of a specific step.
+Returns the state of a specific step within a workflow instance. Requires step state tracking to be enabled (a `StepStateStore` bean must be available).
 
 ```http
 GET /api/v1/workflows/{workflowId}/instances/{instanceId}/steps/{stepId}
 ```
 
-**Response:**
+**Response (200 OK):**
 
 ```json
 {
   "workflowId": "order-processing",
-  "instanceId": "inst-789",
+  "instanceId": "a1b2c3d4-...",
   "stepId": "validate",
   "status": "COMPLETED",
   "triggeredBy": "workflow",
   "input": {"orderId": "ORD-123"},
   "output": {"valid": true},
-  "startedAt": "2025-01-15T10:30:00Z",
-  "completedAt": "2025-01-15T10:30:01Z",
+  "startedAt": "2026-02-20T10:00:00Z",
+  "completedAt": "2026-02-20T10:00:01Z",
   "durationMs": 1000
 }
 ```
 
+**Response (501 Not Implemented):** Step state tracking is not enabled.
+
 ### Get All Step States
 
-Gets all step states for a workflow instance.
+Returns all step states for a workflow instance.
 
 ```http
 GET /api/v1/workflows/{workflowId}/instances/{instanceId}/steps
 ```
 
-**Response:**
-
-```json
-[
-  {
-    "stepId": "validate",
-    "status": "COMPLETED",
-    "durationMs": 1000
-  },
-  {
-    "stepId": "process-payment",
-    "status": "RUNNING",
-    "durationMs": null
-  }
-]
-```
-
-### Record Step Heartbeat
-
-Records a heartbeat for a long-running step, indicating it is still making progress. Requires durable execution to be enabled.
-
-```http
-POST /api/v1/workflows/{workflowId}/instances/{instanceId}/steps/{stepId}/heartbeat
-Content-Type: application/json
-
-{
-  "details": {
-    "lastIndex": 450,
-    "progress": 75
-  }
-}
-```
-
-**Request Body:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `details` | object | No | Arbitrary progress data for resume on recovery |
-
-**Response (200 OK):**
-
-```json
-{
-  "instanceId": "inst-789",
-  "stepId": "process-large-dataset",
-  "recorded": true,
-  "timestamp": "2025-01-15T10:32:00Z"
-}
-```
-
----
+**Response (200 OK):** Array of `StepStateResponse` objects. Returns an empty array if step state tracking is not enabled.
 
 ### Get Workflow State (Dashboard View)
 
-Gets comprehensive workflow state including all step tracking.
+Returns comprehensive workflow state including all step tracking information. Useful for dashboard UIs.
 
 ```http
 GET /api/v1/workflows/{workflowId}/instances/{instanceId}/state
 ```
 
-**Response:**
+**Response (200 OK):**
 
 ```json
 {
   "workflowId": "order-processing",
-  "instanceId": "inst-789",
+  "instanceId": "a1b2c3d4-...",
   "status": "RUNNING",
   "totalSteps": 3,
   "completedSteps": ["validate"],
@@ -468,16 +402,18 @@ GET /api/v1/workflows/{workflowId}/instances/{instanceId}/state
   "skippedSteps": [],
   "currentStepId": "process-payment",
   "nextStepId": "ship",
-  "createdAt": "2025-01-15T10:30:00Z",
-  "updatedAt": "2025-01-15T10:30:01Z"
+  "createdAt": "2026-02-20T10:00:00Z",
+  "updatedAt": "2026-02-20T10:00:01Z"
 }
 ```
+
+**Response (501 Not Implemented):** Step state tracking is not enabled.
 
 ---
 
 ## Dead Letter Queue (DLQ) Endpoints
 
-Endpoints for managing failed workflow entries. Available at `/api/v1/workflows/dlq`.
+Endpoints for managing failed workflow entries. Served by `DeadLetterController` at `{base-path}/dlq`. The controller is created when `firefly.workflow.dlq.enabled` is `true` and a `DeadLetterService` bean is available.
 
 ### List DLQ Entries
 
@@ -490,76 +426,17 @@ GET /api/v1/workflows/dlq?workflowId=order-processing
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `workflowId` | string | Filter by workflow ID |
-| `instanceId` | string | Filter by instance ID |
+| `workflowId` | `String` | Filter by workflow ID (optional) |
 
-**Response:**
-
-```json
-[
-  {
-    "id": "dlq-123",
-    "workflowId": "order-processing",
-    "instanceId": "inst-789",
-    "stepId": "process-payment",
-    "stepName": "Process Payment",
-    "errorMessage": "Payment gateway timeout",
-    "errorType": "java.util.concurrent.TimeoutException",
-    "attemptCount": 3,
-    "correlationId": "corr-456",
-    "triggeredBy": "event:order.validated",
-    "createdAt": "2025-01-15T10:35:00Z",
-    "lastAttemptAt": "2025-01-15T10:35:30Z"
-  }
-]
-```
-
-### Get DLQ Entry
-
-```http
-GET /api/v1/workflows/dlq/{id}
-```
-
-### Replay DLQ Entry
-
-Replays a failed workflow/step from the DLQ.
-
-```http
-POST /api/v1/workflows/dlq/{id}/replay
-Content-Type: application/json
-
-{
-  "modifiedInput": {
-    "retryToken": "new-token"
-  }
-}
-```
-
-**Response:**
-
-```json
-{
-  "entryId": "dlq-123",
-  "success": true,
-  "instanceId": "inst-new-456",
-  "errorMessage": null
-}
-```
-
-### Delete DLQ Entry
-
-```http
-DELETE /api/v1/workflows/dlq/{id}
-```
+**Response (200 OK):** Array of `DeadLetterEntry` objects.
 
 ### Get DLQ Count
 
 ```http
 GET /api/v1/workflows/dlq/count
-GET /api/v1/workflows/dlq/count?workflowId=order-processing
 ```
 
-**Response:**
+**Response (200 OK):**
 
 ```json
 {
@@ -567,11 +444,95 @@ GET /api/v1/workflows/dlq/count?workflowId=order-processing
 }
 ```
 
+### Get DLQ Entry
+
+```http
+GET /api/v1/workflows/dlq/{entryId}
+```
+
+**Response (200 OK):** A single `DeadLetterEntry` object.
+
+**Response (404 Not Found):** Entry not found.
+
+### Replay DLQ Entry
+
+Replays a specific failed workflow or step from the DLQ. Optionally accepts modified input.
+
+```http
+POST /api/v1/workflows/dlq/{entryId}/replay
+Content-Type: application/json
+
+{
+  "retryToken": "new-token"
+}
+```
+
+The request body is optional. If provided, the keys are merged into the workflow input.
+
+**Response (200 OK):**
+
+```json
+{
+  "entryId": "dlq-123",
+  "success": true,
+  "instanceId": "new-inst-456",
+  "errorMessage": null
+}
+```
+
+**Response (500):** Replay failed. The `ReplayResult` is returned with `success: false`.
+
+### Replay All DLQ Entries for a Workflow
+
+```http
+POST /api/v1/workflows/dlq/replay?workflowId=order-processing
+```
+
+**Response (200 OK):** Stream of `ReplayResult` objects.
+
+### Delete DLQ Entry
+
+```http
+DELETE /api/v1/workflows/dlq/{entryId}
+```
+
+**Response (204 No Content):** Entry deleted.
+
+**Response (404 Not Found):** Entry not found.
+
+### Delete DLQ Entries by Workflow ID
+
+```http
+DELETE /api/v1/workflows/dlq?workflowId=order-processing
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "deleted": 3
+}
+```
+
+### Delete All DLQ Entries
+
+```http
+DELETE /api/v1/workflows/dlq/all
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "deleted": 15
+}
+```
+
 ---
 
 ## Durable Execution Endpoints
 
-The following endpoints are available when durable execution is enabled (`firefly.workflow.eventsourcing.enabled: true`).
+The following endpoints require durable execution to be enabled (`firefly.workflow.eventsourcing.enabled: true`). If the required service is not available, these endpoints return `501 Not Implemented`.
 
 ### Send Signal
 
@@ -590,172 +551,97 @@ Content-Type: application/json
 }
 ```
 
-**Request Body:**
+**Request Body (`SendSignalRequest`):**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `signalName` | string | Yes | Name of the signal (must match `@WaitForSignal` name) |
-| `payload` | object | No | Data to deliver with the signal |
+| `signalName` | `String` | Yes (`@NotBlank`) | Signal name matching `@WaitForSignal(name = ...)` |
+| `payload` | `Map<String, Object>` | No | Data to deliver with the signal |
 
-**Response (200 OK):**
+**Response (200 OK):** Returns a `SignalResult` object.
 
-```json
-{
-  "instanceId": "inst-789",
-  "workflowId": "order-processing",
-  "signalName": "approval-received",
-  "delivered": true,
-  "buffered": false
-}
-```
-
-If the signal is buffered (no step currently waiting):
-
-```json
-{
-  "instanceId": "inst-789",
-  "workflowId": "order-processing",
-  "signalName": "approval-received",
-  "delivered": false,
-  "buffered": true
-}
-```
+**Response (501 Not Implemented):** `SignalService` is not configured.
 
 ### Execute Query
 
-Executes a named query against a running workflow instance. Queries are read-only and do not modify workflow state.
+Executes a named query against a workflow instance. Queries are read-only and do not modify workflow state.
 
 ```http
 GET /api/v1/workflows/{workflowId}/instances/{instanceId}/query/{queryName}
 ```
 
-**Path Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `workflowId` | string | Workflow definition ID |
-| `instanceId` | string | Workflow instance ID |
-| `queryName` | string | Name of the query (built-in or custom `@WorkflowQuery` name) |
-
 **Built-in Query Names:**
 
-| Query Name | Description |
-|------------|-------------|
-| `getStatus` | Current workflow status |
-| `getCurrentStep` | Currently executing step |
-| `getStepHistory` | All step execution records |
-| `getContext` | Workflow context data |
-| `getSearchAttributes` | Current search attribute values |
+| Query Name | Returns |
+|------------|---------|
+| `getStatus` | Current workflow status string |
+| `getCurrentStep` | Currently executing step ID |
+| `getStepHistory` | Map of step ID to step state summary |
+| `getContext` | Workflow context data map |
+| `getSearchAttributes` | Search attribute key-value map |
+| `getInput` | Workflow input map |
+| `getOutput` | Workflow output (null if not completed) |
+| `getPendingSignals` | Set of pending signal names |
+| `getActiveTimers` | Set of active timer IDs |
+| `getChildWorkflows` | Map of child instance ID to child workflow summary |
 
-**Response (200 OK) - Example for custom query `orderSummary`:**
+**Response (200 OK):** The query result (type varies by query).
 
-```json
-{
-  "orderId": "ORD-123",
-  "status": "PROCESSING",
-  "itemCount": 5,
-  "totalAmount": 299.99
-}
-```
+**Response (400 Bad Request):** Unknown query name.
 
-**Response (200 OK) - Example for built-in query `getStepHistory`:**
-
-```json
-[
-  {
-    "stepId": "validate",
-    "status": "COMPLETED",
-    "startedAt": "2025-01-15T10:30:00Z",
-    "completedAt": "2025-01-15T10:30:01Z",
-    "attemptNumber": 1
-  },
-  {
-    "stepId": "process-payment",
-    "status": "RUNNING",
-    "startedAt": "2025-01-15T10:30:01Z",
-    "attemptNumber": 1
-  }
-]
-```
+**Response (501 Not Implemented):** `WorkflowQueryService` is not configured.
 
 ### Search by Attributes
 
-Searches workflow instances by custom search attribute values. Requires `search-attributes.enabled: true`.
+Searches workflow instances by custom search attribute values. All parameters are combined with AND logic.
 
 ```http
 GET /api/v1/workflows/search?customerId=CUST-123&region=us-east
 ```
 
-**Query Parameters:**
+**Response (200 OK):** Stream of `WorkflowInstance` objects matching all criteria.
 
-Any key-value pairs matching search attribute names and values. Multiple parameters are combined with AND logic.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `{attributeKey}` | string | Search attribute key and value to filter by |
-| `workflowId` | string | (Optional) Filter by workflow definition ID |
-| `status` | string | (Optional) Filter by workflow status |
-
-**Response (200 OK):**
-
-```json
-[
-  {
-    "instanceId": "inst-789",
-    "workflowId": "order-processing",
-    "status": "RUNNING",
-    "searchAttributes": {
-      "customerId": "CUST-123",
-      "region": "us-east",
-      "orderStatus": "PROCESSING"
-    },
-    "createdAt": "2025-01-15T10:30:00Z"
-  },
-  {
-    "instanceId": "inst-790",
-    "workflowId": "order-processing",
-    "status": "COMPLETED",
-    "searchAttributes": {
-      "customerId": "CUST-123",
-      "region": "us-east",
-      "orderStatus": "SHIPPED"
-    },
-    "createdAt": "2025-01-15T09:15:00Z"
-  }
-]
-```
+**Response (501 Not Implemented):** `WorkflowSearchService` is not configured.
 
 ---
 
-## Status Codes
+## HTTP Status Codes
 
 | Code | Description |
 |------|-------------|
 | 200 | Success |
 | 201 | Created (workflow started) |
-| 202 | Accepted (workflow still running) |
-| 400 | Bad Request (invalid input) |
-| 404 | Not Found (workflow or instance not found) |
+| 202 | Accepted (workflow still running, returned by collect endpoint) |
+| 204 | No Content (successful deletion) |
+| 400 | Bad Request (invalid input, illegal state transition, unknown query) |
+| 404 | Not Found (workflow definition, instance, or DLQ entry not found) |
 | 500 | Internal Server Error |
-| 501 | Not Implemented (step state tracking disabled) |
+| 501 | Not Implemented (step state tracking disabled, or durable execution service not available) |
 
 ---
 
 ## Java API
 
-The `WorkflowEngine` class provides the main programmatic interface.
+### WorkflowEngine
 
-### Injection
+The `WorkflowEngine` class is the main programmatic interface for workflow operations. Inject it via constructor injection:
 
 ```java
-@Autowired
-private WorkflowEngine workflowEngine;
+@Service
+public class OrderService {
+
+    private final WorkflowEngine workflowEngine;
+
+    public OrderService(WorkflowEngine workflowEngine) {
+        this.workflowEngine = workflowEngine;
+    }
+}
 ```
 
-### Starting Workflows
+#### Starting Workflows
 
 ```java
-// Simple start
+// Basic start (triggeredBy defaults to "api")
 Mono<WorkflowInstance> instance = workflowEngine.startWorkflow(
     "order-processing",
     Map.of("orderId", "ORD-123")
@@ -768,106 +654,138 @@ Mono<WorkflowInstance> instance = workflowEngine.startWorkflow(
     "correlation-456",
     "api"
 );
+
+// With dry-run mode
+Mono<WorkflowInstance> instance = workflowEngine.startWorkflow(
+    "order-processing",
+    Map.of("orderId", "ORD-123"),
+    "correlation-456",
+    "api",
+    true  // dryRun
+);
 ```
 
-### Getting Status
+**`startWorkflow` overloads:**
+
+| Signature | Description |
+|-----------|-------------|
+| `startWorkflow(workflowId, input)` | Basic start with trigger source `"api"` |
+| `startWorkflow(workflowId, input, correlationId, triggeredBy)` | With correlation ID and trigger source |
+| `startWorkflow(workflowId, input, correlationId, triggeredBy, dryRun)` | Full options including dry-run mode |
+
+All overloads return `Mono<WorkflowInstance>`. They throw `WorkflowNotFoundException` if the workflow ID is not registered.
+
+#### Querying Status
 
 ```java
 // By workflow ID and instance ID
-Mono<WorkflowInstance> status = workflowEngine.getStatus(
-    "order-processing",
-    instanceId
-);
+Mono<WorkflowInstance> status = workflowEngine.getStatus("order-processing", instanceId);
 
 // By instance ID only
 Mono<WorkflowInstance> status = workflowEngine.getStatus(instanceId);
 ```
 
-### Collecting Results
+Both overloads return `Mono.error(WorkflowNotFoundException)` if the instance is not found.
+
+#### Collecting Results
 
 ```java
 Mono<Order> result = workflowEngine.collectResult(
-    "order-processing",
-    instanceId,
-    Order.class
+    "order-processing", instanceId, Order.class
 );
 ```
 
-### Triggering Steps
+Returns `Mono.error(IllegalStateException)` if:
+- The workflow is not in a terminal state
+- The workflow status is `FAILED` or `CANCELLED`
+- The output cannot be cast to the requested type
 
-```java
-Mono<WorkflowInstance> result = workflowEngine.triggerStep(
-    "order-processing",
-    instanceId,
-    "process-payment",
-    Map.of("paymentMethod", "credit"),
-    "api"
-);
-```
+Returns `Mono.empty()` if the output is null.
 
-### Step State
-
-```java
-// Get single step state
-Mono<StepState> state = workflowEngine.getStepState(
-    "order-processing",
-    instanceId,
-    "validate"
-);
-
-// Get all step states
-Flux<StepState> states = workflowEngine.getStepStates(
-    "order-processing",
-    instanceId
-);
-
-// Get comprehensive workflow state
-Mono<WorkflowState> state = workflowEngine.getWorkflowState(
-    "order-processing",
-    instanceId
-);
-```
-
-### Cancelling and Retrying
+#### Cancelling, Suspending, Resuming
 
 ```java
 // Cancel a running workflow
 Mono<WorkflowInstance> cancelled = workflowEngine.cancelWorkflow(
-    "order-processing",
-    instanceId
+    "order-processing", instanceId
 );
 
-// Retry a failed workflow
+// Suspend with reason
+Mono<WorkflowInstance> suspended = workflowEngine.suspendWorkflow(
+    "order-processing", instanceId, "Downstream service outage"
+);
+
+// Resume a suspended workflow
+Mono<WorkflowInstance> resumed = workflowEngine.resumeWorkflow(
+    "order-processing", instanceId
+);
+
+// Retry a failed workflow from the failed step
 Mono<WorkflowInstance> retried = workflowEngine.retryWorkflow(
-    "order-processing",
-    instanceId
+    "order-processing", instanceId
 );
 ```
 
-### Finding Instances
+`cancelWorkflow` throws `IllegalStateException` if the workflow is already terminal.
+
+`suspendWorkflow` throws `IllegalStateException` if `status.canSuspend()` returns `false`.
+
+`resumeWorkflow` throws `IllegalStateException` if `status.canResume()` returns `false`.
+
+`retryWorkflow` throws `IllegalStateException` if the workflow status is not `FAILED`.
+
+#### Step Operations
+
+```java
+// Trigger a specific step
+Mono<WorkflowInstance> result = workflowEngine.triggerStep(
+    "order-processing", instanceId, "process-payment",
+    Map.of("paymentMethod", "credit"), "api"
+);
+
+// Get single step state (requires StepStateStore)
+Mono<StepState> state = workflowEngine.getStepState(
+    "order-processing", instanceId, "validate"
+);
+
+// Get all step states (requires StepStateStore)
+Flux<StepState> states = workflowEngine.getStepStates(
+    "order-processing", instanceId
+);
+
+// Get comprehensive workflow state (requires StepStateStore)
+Mono<WorkflowState> state = workflowEngine.getWorkflowState(
+    "order-processing", instanceId
+);
+
+// Check if step state tracking is enabled
+boolean enabled = workflowEngine.isStepStateTrackingEnabled();
+```
+
+Step state methods throw `UnsupportedOperationException` if no `StepStateStore` is available.
+
+#### Finding Instances
 
 ```java
 // All instances of a workflow
-Flux<WorkflowInstance> instances = workflowEngine.findInstances(
-    "order-processing"
-);
+Flux<WorkflowInstance> instances = workflowEngine.findInstances("order-processing");
 
 // By status
 Flux<WorkflowInstance> running = workflowEngine.findInstances(
-    "order-processing",
-    WorkflowStatus.RUNNING
+    "order-processing", WorkflowStatus.RUNNING
 );
 
-// Active instances (running or waiting)
+// All active instances (RUNNING or WAITING)
 Flux<WorkflowInstance> active = workflowEngine.findActiveInstances();
 
 // By correlation ID
-Flux<WorkflowInstance> correlated = workflowEngine.findByCorrelationId(
-    "correlation-456"
-);
+Flux<WorkflowInstance> correlated = workflowEngine.findByCorrelationId("correlation-456");
+
+// All suspended instances
+Flux<WorkflowInstance> suspended = workflowEngine.findSuspendedInstances();
 ```
 
-### Workflow Registration
+#### Workflow Registration
 
 ```java
 // Register a workflow definition
@@ -881,175 +799,264 @@ Optional<WorkflowDefinition> def = workflowEngine.getWorkflowDefinition(
     "order-processing"
 );
 
-// Get all workflows
+// Get all registered workflows
 Collection<WorkflowDefinition> all = workflowEngine.getAllWorkflows();
 ```
 
-### Event-Based Discovery
+#### Event-Based Discovery
 
 ```java
-// Find workflows triggered by an event
+// Find workflows triggered by an event type
 Flux<WorkflowDefinition> workflows = workflowEngine.findWorkflowsByTriggerEvent(
     "order.created"
 );
 
-// Find steps waiting for an event
-Flux<StepState> waiting = workflowEngine.findStepsWaitingForEvent(
-    "payment.processed"
-);
+// Find step states waiting for an event
+Flux<StepState> waiting = workflowEngine.findStepsWaitingForEvent("payment.processed");
 
-// Find step definitions by input event
-List<WorkflowStepMatch> matches = workflowEngine.findStepsByInputEvent(
-    "order.validated"
-);
+// Find step definitions matching an input event type
+List<WorkflowStepMatch> matches = workflowEngine.findStepsByInputEvent("order.validated");
 ```
 
-### Sending Signals (Durable Execution)
+`WorkflowStepMatch` is a record containing the matched `WorkflowDefinition` and `WorkflowStepDefinition`.
 
-```java
-// Send a named signal to a running workflow instance
-Mono<SignalResult> result = workflowEngine.signal(
-    instanceId,
-    "approval-received",
-    Map.of("approvedBy", "manager@company.com", "approved", true)
-);
-```
-
-### Executing Queries (Durable Execution)
-
-```java
-// Execute a named query (built-in or custom @WorkflowQuery)
-Mono<Map<String, Object>> result = workflowEngine.query(
-    instanceId,
-    "orderSummary",
-    Map.of()  // optional query arguments
-);
-```
-
-### Searching by Attributes (Durable Execution)
-
-```java
-// Search workflow instances by custom search attribute values
-Flux<WorkflowInstance> instances = workflowEngine.searchByAttributes(
-    Map.of("customerId", "CUST-123", "region", "us-east")
-);
-```
-
-### Health Check
+#### Health Check
 
 ```java
 Mono<Boolean> healthy = workflowEngine.isHealthy();
 ```
 
----
-
-## WorkflowInstance Record
-
-The `WorkflowInstance` record contains workflow execution state:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `instanceId` | String | Unique instance identifier |
-| `workflowId` | String | Workflow definition ID |
-| `workflowName` | String | Human-readable name |
-| `workflowVersion` | String | Version number |
-| `status` | WorkflowStatus | Current status |
-| `currentStepId` | String | Currently executing step |
-| `context` | WorkflowContext | Execution context |
-| `input` | Map | Input data |
-| `output` | Object | Final output |
-| `stepExecutions` | List | Step execution history |
-| `errorMessage` | String | Error message if failed |
-| `errorDetails` | String | Detailed error info |
-| `correlationId` | String | Correlation ID |
-| `triggeredBy` | String | Trigger source |
-| `createdAt` | Instant | Creation timestamp |
-| `startedAt` | Instant | Start timestamp |
-| `completedAt` | Instant | Completion timestamp |
+Delegates to `WorkflowStateStore.isHealthy()`.
 
 ---
 
-## WorkflowStatus Enum
+### WorkflowContext
 
-| Status | Terminal | Description |
+The `WorkflowContext` is passed to every step method and provides access to all workflow data.
+
+#### Core Methods
+
+| Method | Return Type | Description |
+|--------|-------------|-------------|
+| `getInstanceId()` | `String` | Unique instance identifier |
+| `getWorkflowId()` | `String` | Workflow definition ID |
+| `getCorrelationId()` | `String` | Correlation ID for distributed tracing |
+| `isDryRun()` | `boolean` | Whether this is a dry-run execution |
+| `getInput(key, type)` | `<T> T` | Get typed input value by key |
+| `getInput(key)` | `Object` | Get raw input value by key |
+| `getAllInputs()` | `Map<String, Object>` | Get all input values |
+| `getAllInput()` | `Map<String, Object>` | Alias for `getAllInputs()` |
+| `getStepOutput(stepId, type)` | `<T> T` | Get typed output from a previous step |
+| `getStepOutput(stepId)` | `Object` | Get raw output from a previous step |
+| `get(key, type)` | `<T> T` | Get typed value from shared context |
+| `get(key)` | `Object` | Get raw value from shared context |
+| `getOrDefault(key, defaultValue)` | `String` | Get string value with default |
+| `set(key, value)` | `void` | Set value in shared context |
+| `remove(key)` | `void` | Remove value from shared context |
+| `has(key)` | `boolean` | Check if key exists in shared context |
+| `getAllData()` | `Map<String, Object>` | Get all shared context data |
+| `merge(map)` | `void` | Merge map into shared context |
+| `forNextStep(stepOutput)` | `WorkflowContext` | Create context for next step with output merged |
+
+#### Durable Execution Methods
+
+These methods are available on `WorkflowContext` and require durable execution to be enabled.
+
+| Method | Return Type | Description |
+|--------|-------------|-------------|
+| `sideEffect(id, supplier)` | `<T> T` | Record and replay non-deterministic values |
+| `heartbeat(details)` | `void` | Report progress for long-running steps |
+| `startChildWorkflow(workflowId, input)` | `Mono<Object>` | Spawn a child workflow |
+
+---
+
+### StepHandler Interface
+
+The `StepHandler<T>` interface is used for reusable step logic across workflows.
+
+```java
+public interface StepHandler<T> {
+
+    Mono<T> execute(WorkflowContext context);
+
+    default Mono<Void> compensate(WorkflowContext context) {
+        return Mono.empty();
+    }
+
+    default boolean shouldSkip(WorkflowContext context) {
+        return false;
+    }
+}
+```
+
+| Method | Required | Description |
 |--------|----------|-------------|
-| `PENDING` | No | Created but not started |
-| `RUNNING` | No | Currently executing |
-| `WAITING` | No | Waiting for external event |
-| `SUSPENDED` | No | Paused by operator |
-| `COMPLETED` | Yes | Successfully completed |
-| `FAILED` | Yes | Failed with error |
-| `CANCELLED` | Yes | Cancelled by user |
+| `execute(context)` | Yes | Step business logic, returns `Mono<T>` |
+| `compensate(context)` | No | Compensation logic for saga rollback (default: no-op) |
+| `shouldSkip(context)` | No | Conditional skip logic (default: `false`) |
+
+Register as a Spring bean and reference via `handlerBeanName`:
+
+```java
+@Component("validateOrderStep")
+public class ValidateOrderStepHandler implements StepHandler<ValidationResult> {
+
+    @Override
+    public Mono<ValidationResult> execute(WorkflowContext context) {
+        String orderId = context.getInput("orderId", String.class);
+        return validator.validate(orderId);
+    }
+}
+```
 
 ---
 
-## StepState Record
+## Annotations
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `workflowId` | String | Workflow ID |
-| `instanceId` | String | Instance ID |
-| `stepId` | String | Step ID |
-| `status` | StepStatus | Step status |
-| `triggeredBy` | String | How step was triggered |
-| `input` | Map | Step input |
-| `output` | Object | Step output |
-| `errorMessage` | String | Error if failed |
-| `startedAt` | Instant | Start time |
-| `completedAt` | Instant | Completion time |
-| `durationMs` | Long | Execution duration |
-| `attemptNumber` | int | Retry attempt number |
+### @Workflow
+
+Marks a class as a workflow definition. Includes `@Component`, so the class is automatically registered as a Spring bean.
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `id` | `String` | Class name (kebab-case) | Unique workflow identifier |
+| `name` | `String` | Simple class name | Human-readable name |
+| `description` | `String` | `""` | Workflow description |
+| `version` | `String` | `"1.0.0"` | Version string |
+| `triggerMode` | `TriggerMode` | `BOTH` | `SYNC`, `ASYNC`, or `BOTH` |
+| `triggerEventType` | `String` | `""` | Event type that starts this workflow |
+| `timeoutMs` | `long` | `0` | Workflow timeout in ms (0 = use config default) |
+| `maxRetries` | `int` | `3` | Default max retries for steps |
+| `retryDelayMs` | `long` | `1000` | Initial retry delay in ms |
+| `publishEvents` | `boolean` | `true` | Publish lifecycle events |
+
+### @WorkflowStep
+
+Marks a method as a workflow step. The method can return `Mono<T>`, `T` (auto-wrapped in `Mono`), or `void`/`Mono<Void>`.
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `id` | `String` | Method name | Unique step ID within the workflow |
+| `name` | `String` | Method name | Human-readable name |
+| `description` | `String` | `""` | Step description |
+| `dependsOn` | `String[]` | `{}` | Step IDs this step depends on |
+| `order` | `int` | `0` | Execution order (lower first, used when no `dependsOn`) |
+| `triggerMode` | `StepTriggerMode` | `BOTH` | `EVENT`, `PROGRAMMATIC`, or `BOTH` |
+| `inputEventType` | `String` | `""` | Event type that triggers this step |
+| `outputEventType` | `String` | `""` | Event type published on completion |
+| `timeoutMs` | `long` | `0` | Step timeout in ms (0 = use workflow default) |
+| `maxRetries` | `int` | `-1` | Max retries (-1 = use workflow default) |
+| `retryDelayMs` | `long` | `-1` | Initial retry delay in ms (-1 = use workflow default) |
+| `condition` | `String` | `""` | SpEL expression for conditional execution |
+| `async` | `boolean` | `false` | Execute asynchronously within its dependency layer |
+| `compensatable` | `boolean` | `false` | Supports compensation on rollback |
+| `compensationMethod` | `String` | `""` | Method name for compensation logic |
+
+### @ScheduledWorkflow
+
+Schedules a workflow for automatic execution. `@Repeatable` -- multiple schedules can be applied to one workflow.
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `cron` | `String` | `""` | Cron expression (Spring format) |
+| `zone` | `String` | `""` | Timezone (default: system default) |
+| `enabled` | `String` | `"true"` | Whether this schedule is active |
+| `fixedDelay` | `long` | `-1` | Fixed delay between runs in ms |
+| `fixedRate` | `long` | `-1` | Fixed rate between runs in ms |
+| `initialDelay` | `long` | `0` | Initial delay before first run in ms |
+| `input` | `String` | `""` | JSON string input for the workflow |
+| `description` | `String` | `""` | Description for logging |
+
+### @OnStepComplete
+
+Called after a step completes successfully.
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `stepIds` | `String[]` | `{}` | Filter by step IDs (empty = all steps) |
+| `async` | `boolean` | `true` | Execute callback asynchronously |
+| `priority` | `int` | `0` | Execution priority (lower = higher priority) |
+
+### @OnWorkflowComplete
+
+Called when the workflow completes successfully.
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `async` | `boolean` | `true` | Execute callback asynchronously |
+| `priority` | `int` | `0` | Execution priority |
+
+### @OnWorkflowError
+
+Called when the workflow fails.
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `errorTypes` | `Class<?>[]` | `{}` | Filter by exception types (empty = all errors) |
+| `stepIds` | `String[]` | `{}` | Filter by step IDs (empty = all steps) |
+| `async` | `boolean` | `false` | Execute callback asynchronously |
+| `priority` | `int` | `0` | Execution priority |
+| `suppressError` | `boolean` | `false` | Suppress the error (prevent workflow failure) |
+
+### Durable Execution Annotations
+
+| Annotation | Attributes | Description |
+|------------|------------|-------------|
+| `@WaitForSignal` | `name`, `timeoutDuration` (ISO-8601), `timeoutAction` (`FAIL`/`ESCALATE`/`SKIP`) | Pause step until a named signal arrives |
+| `@WaitForTimer` | `duration` (ISO-8601), `fireAt` (ISO-8601 instant) | Pause step until a timer fires |
+| `@WaitForAll` | `signals` (`WaitForSignal[]`), `timers` (`WaitForTimer[]`) | Wait for ALL conditions (join pattern) |
+| `@WaitForAny` | `signals` (`WaitForSignal[]`), `timers` (`WaitForTimer[]`) | Wait for ANY condition (race pattern) |
+| `@ChildWorkflow` | `workflowId`, `waitForCompletion` (default `true`), `timeoutMs` | Spawn a child workflow from a step |
+| `@CompensationStep` | `compensates` (step ID) | Declare compensation logic for a step |
 
 ---
 
-## StepStatus Enum
+## Model Types
 
-| Status | Description |
-|--------|-------------|
-| `PENDING` | Not yet executed |
-| `RUNNING` | Currently executing |
-| `COMPLETED` | Successfully completed |
-| `FAILED` | Failed with error |
-| `SKIPPED` | Skipped (condition false) |
-| `RETRYING` | Retrying after failure |
+### WorkflowStatus Enum
 
----
+| Status | Terminal | Active | Can Suspend | Can Resume | Description |
+|--------|----------|--------|-------------|------------|-------------|
+| `PENDING` | No | No | No | No | Created but not started |
+| `RUNNING` | No | Yes | Yes | No | Currently executing |
+| `WAITING` | No | Yes | Yes | No | Waiting for external event |
+| `SUSPENDED` | No | No | No | Yes | Paused by operator |
+| `COMPLETED` | Yes | No | No | No | Successfully completed |
+| `FAILED` | Yes | No | No | No | Failed with error |
+| `CANCELLED` | Yes | No | No | No | Cancelled by user |
+| `TIMED_OUT` | Yes | No | No | No | Timed out |
 
-## StepTriggerMode Enum
+### TriggerMode Enum
 
-| Mode | Description |
-|------|-------------|
-| `EVENT` | Step is triggered by events only (recommended for choreography) |
-| `PROGRAMMATIC` | Step is invoked via API only |
-| `BOTH` | Supports both patterns (default) |
+| Value | Description |
+|-------|-------------|
+| `SYNC` | Synchronous trigger only |
+| `ASYNC` | Asynchronous trigger only |
+| `BOTH` | Both sync and async (default) |
 
----
+### StepTriggerMode Enum
 
-## WorkflowStepDefinition Fields
+| Value | `allowsEventTrigger()` | `allowsProgrammaticTrigger()` | Description |
+|-------|------------------------|-------------------------------|-------------|
+| `EVENT` | `true` | `false` | Triggered by events only |
+| `PROGRAMMATIC` | `false` | `true` | Invoked via API only |
+| `BOTH` | `true` | `true` | Supports both (default) |
 
-Step definitions returned by the API include:
+### CompensationPolicy Enum
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `stepId` | String | Unique step identifier |
-| `name` | String | Human-readable name |
-| `description` | String | Step description |
-| `dependsOn` | String[] | Step IDs this step depends on |
-| `triggerMode` | StepTriggerMode | How step can be invoked |
-| `order` | int | Execution order (legacy) |
-| `async` | boolean | Execute in parallel |
-| `inputEventType` | String | Event to trigger step |
-| `outputEventType` | String | Event to emit on completion |
-| `condition` | String | SpEL condition |
-| `timeoutMs` | long | Timeout in milliseconds |
-| `maxRetries` | int | Retry attempts |
-| `retryDelayMs` | long | Retry delay |
+| Value | Description |
+|-------|-------------|
+| `STRICT_SEQUENTIAL` | Compensate in reverse order, stop on first failure |
+| `BEST_EFFORT` | Compensate all steps in reverse order, collect all errors |
+| `SKIP` | No compensation, workflow fails immediately |
 
 ---
 
 ## Next Steps
 
-- [Getting Started](getting-started.md) - Basic tutorial
-- [Architecture](architecture.md) - System design
-- [Advanced Features](advanced-features.md) - Resilience4j, choreography, and more
-- [Configuration Reference](configuration.md) - All configuration options
+- [Getting Started](getting-started.md) -- Prerequisites, cache setup, first workflow
+- [Architecture](architecture.md) -- Internal components and execution model
+- [Configuration](configuration.md) -- Complete property reference with defaults
+- [Advanced Features](advanced-features.md) -- DAG execution, resilience, scheduling, DLQ
+- [Durable Execution](durable-execution.md) -- Signals, timers, child workflows, compensation
+- [Testing](testing.md) -- Unit and integration testing strategies

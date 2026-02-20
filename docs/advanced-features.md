@@ -1,14 +1,12 @@
 # Advanced Features
 
-This guide covers advanced features of the Firefly Workflow Engine including step dependencies, trigger modes, Resilience4j integration, step-level choreography, parallel execution, and SpEL conditions.
+This guide covers advanced features of the Firefly Workflow Engine including step dependencies, DAG execution, parallel steps, SpEL conditions, Resilience4j integration, scheduled workflows, Dead Letter Queue, crash recovery, dry-run mode, and suspension/resumption.
 
-## Step Dependencies with `dependsOn`
+## Step Dependencies and DAG Execution
 
-The `dependsOn` attribute is the **recommended approach** for controlling step execution order. It provides explicit dependency management with automatic DAG validation.
+### dependsOn Attribute
 
-### Basic Usage
-
-Declare dependencies by specifying the IDs of steps that must complete first:
+The `dependsOn` attribute on `@WorkflowStep` declares explicit step dependencies. The `WorkflowTopology` class builds a directed acyclic graph (DAG) and computes execution layers using Kahn's algorithm for topological sorting.
 
 ```java
 @Workflow(id = "order-fulfillment")
@@ -16,25 +14,21 @@ public class OrderFulfillmentWorkflow {
 
     @WorkflowStep(id = "validate")
     public Mono<Map<String, Object>> validate(WorkflowContext ctx) {
-        // Root step - no dependencies, executes first
         return Mono.just(Map.of("valid", true));
     }
 
     @WorkflowStep(id = "check-inventory", dependsOn = {"validate"})
     public Mono<Map<String, Object>> checkInventory(WorkflowContext ctx) {
-        // Executes after validate completes
         return Mono.just(Map.of("inStock", true));
     }
 
     @WorkflowStep(id = "process-payment", dependsOn = {"validate"})
     public Mono<Map<String, Object>> processPayment(WorkflowContext ctx) {
-        // Also executes after validate - parallel with check-inventory
         return Mono.just(Map.of("paid", true));
     }
 
     @WorkflowStep(id = "ship", dependsOn = {"check-inventory", "process-payment"})
     public Mono<Map<String, Object>> ship(WorkflowContext ctx) {
-        // Waits for BOTH check-inventory AND process-payment
         return Mono.just(Map.of("shipped", true));
     }
 }
@@ -50,372 +44,39 @@ Steps are organized into execution layers based on their dependencies:
 | 1 | `check-inventory`, `process-payment` | Steps depending only on Layer 0 |
 | 2 | `ship` | Steps depending on Layer 1 |
 
-**Key Benefits:**
-- Steps in the same layer can execute **in parallel** (if marked `async = true`)
-- Clear visualization of workflow structure
-- Automatic optimization of execution order
+Steps in the same layer can execute in parallel when marked `async = true`.
 
-### Validation
+### DAG Validation
 
-The workflow engine validates dependencies during registration:
+`WorkflowTopology` validates dependencies at registration time:
 
-1. **Missing Dependencies**: All referenced step IDs must exist
-   ```java
-   // ERROR: "payment" step doesn't exist
-   @WorkflowStep(id = "ship", dependsOn = {"payment"})
-   ```
+- **Missing dependencies**: All referenced step IDs must exist in the workflow. A reference to a nonexistent step throws `WorkflowValidationException`.
+- **Circular dependencies**: Cycles in the dependency graph are detected during topological sorting and cause a `WorkflowValidationException`.
 
-2. **Circular Dependencies**: No cycles allowed
-   ```java
-   // ERROR: Circular dependency detected
-   @WorkflowStep(id = "step-a", dependsOn = {"step-b"})
-   @WorkflowStep(id = "step-b", dependsOn = {"step-a"})
-   ```
+### Fallback to Order-Based Execution
 
-Validation errors throw `WorkflowValidationException` with descriptive messages.
+If no steps in a workflow use `dependsOn`, the topology falls back to order-based sequential execution using the `order` attribute for backward compatibility. When both `dependsOn` and `order` are present on a step, dependencies take precedence.
 
-### Combining with Event-Driven Choreography
+### Topology Visualization
 
-The `dependsOn` attribute works seamlessly with event-driven patterns:
+The topology endpoint returns nodes, edges, and layer metadata for frontend visualization:
 
-```java
-@WorkflowStep(
-    id = "process-payment",
-    dependsOn = {"validate"},                    // Explicit dependency
-    triggerMode = StepTriggerMode.EVENT,         // Event-driven
-    inputEventType = "order.validated",          // Triggered by event
-    outputEventType = "payment.processed"        // Emits event
-)
-public Mono<PaymentResult> processPayment(WorkflowContext ctx) {
-    return paymentService.process(ctx.getInput("order", Order.class));
-}
+```http
+GET /api/v1/workflows/order-fulfillment/topology
 ```
 
-### Migration from `order` Attribute
+The response includes `nodes` (steps with layer assignments), `edges` (dependency relationships), and `metadata` (total steps, max parallelism, layer count).
 
-The `order` attribute is still supported for backward compatibility:
+---
 
-| Approach | Recommended | Use Case |
-|----------|-------------|----------|
-| `dependsOn` | ✅ Yes | New workflows, explicit dependencies |
-| `order` | ⚠️ Legacy | Existing workflows, simple sequences |
+## Async Parallel Steps
 
-**Migration Example:**
-
-```java
-// Before (order-based)
-@WorkflowStep(id = "step-a", order = 1)
-@WorkflowStep(id = "step-b", order = 2)
-@WorkflowStep(id = "step-c", order = 3)
-
-// After (dependency-based) - Recommended
-@WorkflowStep(id = "step-a")
-@WorkflowStep(id = "step-b", dependsOn = {"step-a"})
-@WorkflowStep(id = "step-c", dependsOn = {"step-b"})
-```
-
-When both `order` and `dependsOn` are specified, **dependencies take precedence**.
-
-## Step Trigger Modes
-
-The `StepTriggerMode` enum controls how a step can be invoked:
-
-### Available Modes
-
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| `EVENT` | Triggered by events only | Event-driven choreography (recommended) |
-| `PROGRAMMATIC` | Invoked via API only | Synchronous request-response |
-| `BOTH` | Supports both patterns | Maximum flexibility (default) |
-
-### Usage Examples
-
-```java
-// Event-driven step (recommended for choreography)
-@WorkflowStep(
-    id = "validate",
-    triggerMode = StepTriggerMode.EVENT,
-    inputEventType = "order.created",
-    outputEventType = "order.validated"
-)
-public Mono<ValidationResult> validate(WorkflowContext ctx) { ... }
-
-// Programmatic step (for API-driven workflows)
-@WorkflowStep(
-    id = "manual-review",
-    triggerMode = StepTriggerMode.PROGRAMMATIC
-)
-public Mono<ReviewResult> manualReview(WorkflowContext ctx) { ... }
-
-// Flexible step (supports both patterns)
-@WorkflowStep(
-    id = "process",
-    triggerMode = StepTriggerMode.BOTH,
-    inputEventType = "order.validated"  // Can also be triggered by event
-)
-public Mono<ProcessResult> process(WorkflowContext ctx) { ... }
-```
-
-### Checking Trigger Mode
-
-```java
-StepTriggerMode mode = StepTriggerMode.EVENT;
-
-if (mode.allowsEventTrigger()) {
-    // Step can be triggered by events
-}
-
-if (mode.allowsProgrammaticTrigger()) {
-    // Step can be invoked via API
-}
-```
-
-### Best Practices
-
-1. **Prefer `EVENT` mode** for event-driven choreography (the primary pattern)
-2. **Use `PROGRAMMATIC`** for steps that require synchronous API calls
-3. **Use `BOTH`** when migrating from programmatic to event-driven patterns
-4. **Document the expected invocation pattern** in step descriptions
-
-## Resilience4j Integration
-
-The workflow engine integrates with Resilience4j to provide fault tolerance patterns for step execution.
-
-### Enabling Resilience
-
-Resilience is enabled by default. Configure it in `application.yml`:
-
-```yaml
-firefly:
-  workflow:
-    resilience:
-      enabled: true
-      circuit-breaker:
-        enabled: true
-        failure-rate-threshold: 50
-        slow-call-rate-threshold: 100
-        slow-call-duration-threshold: PT60S
-        permitted-number-of-calls-in-half-open-state: 10
-        minimum-number-of-calls: 10
-        sliding-window-type: COUNT_BASED
-        sliding-window-size: 100
-        wait-duration-in-open-state: PT60S
-        automatic-transition-from-open-to-half-open-enabled: true
-      rate-limiter:
-        enabled: false
-        limit-for-period: 50
-        limit-refresh-period: PT1S
-        timeout-duration: PT5S
-      bulkhead:
-        enabled: false
-        max-concurrent-calls: 25
-        max-wait-duration: PT0S
-      time-limiter:
-        enabled: true
-        timeout-duration: PT5M
-        cancel-running-future: true
-```
-
-### Circuit Breaker
-
-The circuit breaker prevents cascading failures by stopping calls to failing steps:
-
-```mermaid
-stateDiagram-v2
-    [*] --> CLOSED: Initial state
-    CLOSED --> OPEN: Failure rate exceeds threshold
-    OPEN --> HALF_OPEN: Wait duration elapsed
-    HALF_OPEN --> CLOSED: Test calls succeed
-    HALF_OPEN --> OPEN: Test calls fail
-```
-
-**Configuration Options:**
-
-| Property | Default | Description |
-|----------|---------|-------------|
-| `failure-rate-threshold` | 50 | Failure percentage to open circuit |
-| `slow-call-rate-threshold` | 100 | Slow call percentage to open circuit |
-| `slow-call-duration-threshold` | PT60S | Duration to consider a call slow |
-| `minimum-number-of-calls` | 10 | Minimum calls before calculating rate |
-| `sliding-window-size` | 100 | Number of calls in sliding window |
-| `wait-duration-in-open-state` | PT60S | Time to wait before half-open |
-
-### Rate Limiter
-
-Controls the rate of step executions:
-
-```yaml
-firefly:
-  workflow:
-    resilience:
-      rate-limiter:
-        enabled: true
-        limit-for-period: 50      # 50 calls per period
-        limit-refresh-period: PT1S # Refresh every second
-        timeout-duration: PT5S     # Wait up to 5s for permit
-```
-
-### Bulkhead
-
-Limits concurrent step executions:
-
-```yaml
-firefly:
-  workflow:
-    resilience:
-      bulkhead:
-        enabled: true
-        max-concurrent-calls: 25   # Max 25 concurrent executions
-        max-wait-duration: PT0S    # Don't wait for permit
-```
-
-### Time Limiter
-
-Enforces timeouts on step execution:
-
-```yaml
-firefly:
-  workflow:
-    resilience:
-      time-limiter:
-        enabled: true
-        timeout-duration: PT5M     # 5 minute timeout
-        cancel-running-future: true
-```
-
-### Per-Step Resilience
-
-Resilience patterns are applied per step with unique identifiers:
-- Circuit breaker name: `{workflowId}:{stepId}`
-- Rate limiter name: `{workflowId}:{stepId}`
-- Bulkhead name: `{workflowId}:{stepId}`
-
-This ensures that failures in one step don't affect other steps.
-
-## Step-Level Choreography
-
-Step-level choreography allows steps to be triggered independently via events or API.
-
-### Event-Driven Steps
-
-Configure steps to listen for and emit events:
-
-```java
-@Workflow(
-    id = "order-processing",
-    triggerMode = TriggerMode.ASYNC,
-    triggerEventType = "order.created"
-)
-public class OrderProcessingWorkflow {
-
-    @WorkflowStep(
-        id = "validate",
-        order = 1,
-        outputEventType = "order.validated"
-    )
-    public Mono<Map<String, Object>> validate(WorkflowContext ctx) {
-        return Mono.just(Map.of("valid", true));
-    }
-
-    @WorkflowStep(
-        id = "process-payment",
-        order = 2,
-        inputEventType = "order.validated",
-        outputEventType = "payment.processed"
-    )
-    public Mono<Map<String, Object>> processPayment(WorkflowContext ctx) {
-        return Mono.just(Map.of("paymentId", "PAY-123"));
-    }
-
-    @WorkflowStep(
-        id = "ship",
-        order = 3,
-        inputEventType = "payment.processed"
-    )
-    public Mono<Map<String, Object>> ship(WorkflowContext ctx) {
-        return Mono.just(Map.of("shipped", true));
-    }
-}
-```
-
-### Choreography Flow
-
-```mermaid
-sequenceDiagram
-    participant External
-    participant EventBus
-    participant Workflow
-    participant Step1 as validate
-    participant Step2 as process-payment
-    participant Step3 as ship
-
-    External->>EventBus: order.created
-    EventBus->>Workflow: Trigger workflow
-    Workflow->>Step1: Execute
-    Step1->>EventBus: order.validated
-    EventBus->>Step2: Trigger step
-    Step2->>EventBus: payment.processed
-    EventBus->>Step3: Trigger step
-    Step3->>Workflow: Complete
-```
-
-### Manual Step Triggering
-
-Trigger steps via REST API:
-
-```bash
-POST /api/workflows/{workflowId}/instances/{instanceId}/steps/{stepId}/trigger
-Content-Type: application/json
-
-{
-  "input": {"additionalData": "value"}
-}
-```
-
-Or programmatically:
-
-```java
-workflowEngine.triggerStep(
-    "order-processing",
-    instanceId,
-    "process-payment",
-    Map.of("additionalData", "value"),
-    "api"  // triggeredBy
-);
-```
-
-### Step State Tracking
-
-Each step maintains independent state:
-
-```java
-// Get step state
-StepState state = workflowEngine.getStepState(
-    "order-processing",
-    instanceId,
-    "process-payment"
-).block();
-
-// State includes:
-// - status: PENDING, RUNNING, COMPLETED, FAILED, SKIPPED, RETRYING
-// - triggeredBy: "event:order.validated", "api", "workflow"
-// - input, output, errorMessage
-// - startedAt, completedAt, durationMs
-```
-
-## Parallel Execution
-
-Execute multiple steps concurrently using `async = true` combined with `dependsOn` for optimal parallel execution.
-
-### Dependency-Based Parallel Execution (Recommended)
-
-Using `dependsOn`, steps in the same execution layer automatically run in parallel:
+Steps in the same dependency layer execute in parallel when marked `async = true`.
 
 ```java
 @Workflow(id = "parallel-workflow")
 public class ParallelWorkflow {
 
-    // Layer 0: Root steps - all execute in parallel
     @WorkflowStep(id = "fetch-user", async = true)
     public Mono<User> fetchUser(WorkflowContext ctx) {
         return userService.findById(ctx.getInput("userId", String.class));
@@ -431,7 +92,6 @@ public class ParallelWorkflow {
         return inventoryService.getAvailable();
     }
 
-    // Layer 1: Depends on all Layer 0 steps
     @WorkflowStep(
         id = "create-order",
         dependsOn = {"fetch-user", "fetch-products", "fetch-inventory"}
@@ -445,101 +105,66 @@ public class ParallelWorkflow {
 }
 ```
 
-### Parallel Execution Flow
-
-```mermaid
-graph LR
-    START((Start)) --> A[fetch-user<br/>async]
-    START --> B[fetch-products<br/>async]
-    START --> C[fetch-inventory<br/>async]
-    A --> D[create-order<br/>sync]
-    B --> D
-    C --> D
-    D --> END((End))
-```
-
-### Execution Layers and Parallelism
-
-With `dependsOn`, the engine organizes steps into layers:
+This produces the following execution plan:
 
 | Layer | Steps | Execution |
 |-------|-------|-----------|
-| 0 | `fetch-user`, `fetch-products`, `fetch-inventory` | Parallel (all async) |
-| 1 | `create-order` | Sequential (waits for Layer 0) |
+| 0 | `fetch-user`, `fetch-products`, `fetch-inventory` | Parallel (all `async = true`) |
+| 1 | `create-order` | Sequential (waits for all Layer 0 steps) |
 
-### Parallel Step Behavior
+Outputs from parallel steps are available via `ctx.getStepOutput()`. If any parallel step fails, the workflow fails.
 
-- Steps in the same layer with `async = true` execute in parallel
-- Steps with `dependsOn` wait for all dependencies to complete
-- Outputs from parallel steps are available via `ctx.getStepOutput()`
-- If any parallel step fails, the workflow fails
-
-### Legacy Order-Based Parallel Execution
-
-For backward compatibility, order-based parallel execution is still supported:
-
-```java
-// Legacy approach - still works but dependsOn is preferred
-@WorkflowStep(id = "fetch-user", order = 1, async = true)
-@WorkflowStep(id = "fetch-products", order = 1, async = true)  // Same order = parallel
-@WorkflowStep(id = "create-order", order = 2)  // Higher order = waits
-```
+---
 
 ## SpEL Conditions
 
-Use Spring Expression Language (SpEL) to conditionally execute steps.
+Steps can define a `condition` attribute with a Spring Expression Language (SpEL) expression. The step executes only when the expression evaluates to `true`. If it evaluates to `false`, the step is skipped.
 
-### Available Variables
+### Available SpEL Variables
 
 | Variable | Type | Description |
 |----------|------|-------------|
-| `#ctx` | WorkflowContext | The workflow context object |
-| `#input` | Map<String, Object> | Workflow input values |
-| `#data` | Map<String, Object> | Shared context data |
+| `#ctx` | `WorkflowContext` | The full context object |
+| `#input` | `Map<String, Object>` | The workflow input map |
+| `#data` | `Map<String, Object>` | The shared context data map |
 
-### Condition Examples
+### Examples
 
 ```java
-// Skip if amount is zero or negative
-@WorkflowStep(
-    id = "process-payment",
-    condition = "#input['amount'] > 0"
-)
-
 // Execute only for premium customers
 @WorkflowStep(
     id = "premium-processing",
     condition = "#input['tier'] == 'premium'"
 )
 
-// Check shared context data
+// Skip if amount is zero or negative
+@WorkflowStep(
+    id = "process-payment",
+    condition = "#input['amount'] > 0"
+)
+
+// Check shared context data set by a previous step
 @WorkflowStep(
     id = "send-notification",
     condition = "#data['validated'] == true"
 )
 
-// Complex condition with context methods
+// Use context methods
 @WorkflowStep(
     id = "optional-step",
     condition = "#ctx.has('skipOptional') ? !#ctx.get('skipOptional', Boolean.class) : true"
 )
-
-// Check previous step output
-@WorkflowStep(
-    id = "refund",
-    condition = "#ctx.getStepOutput('validate').get('requiresRefund') == true"
-)
 ```
 
-### Setting Context Data
+### Setting Context Data for Conditions
 
-Set data in one step for use in conditions:
+Set data in one step for use in a condition on a subsequent step:
 
 ```java
 @WorkflowStep(id = "validate", order = 1)
 public Mono<Map<String, Object>> validate(WorkflowContext ctx) {
     boolean isValid = performValidation();
-    ctx.set("validated", isValid);  // Available in #data
+    ctx.set("validated", isValid);
     return Mono.just(Map.of("valid", isValid));
 }
 
@@ -549,41 +174,140 @@ public Mono<Map<String, Object>> validate(WorkflowContext ctx) {
     condition = "#data['validated'] == true"
 )
 public Mono<Map<String, Object>> process(WorkflowContext ctx) {
-    // Only executes if validated == true
     return Mono.just(Map.of("processed", true));
 }
 ```
 
-## Retry Configuration
+---
 
-Configure automatic retries for transient failures.
+## Step Trigger Modes
 
-### Step-Level Retry
+The `StepTriggerMode` enum controls how a step can be invoked:
+
+| Mode | `allowsEventTrigger()` | `allowsProgrammaticTrigger()` | Description |
+|------|------------------------|-------------------------------|-------------|
+| `EVENT` | `true` | `false` | Triggered by events only |
+| `PROGRAMMATIC` | `false` | `true` | Invoked via API only |
+| `BOTH` | `true` | `true` | Supports both (default) |
+
+### Event-Driven Choreography
+
+Steps with `inputEventType` and `outputEventType` form an event-driven chain:
 
 ```java
 @WorkflowStep(
-    id = "call-external-api",
-    maxRetries = 3,
-    retryDelayMs = 1000  // 1 second between retries
+    id = "validate",
+    triggerMode = StepTriggerMode.EVENT,
+    outputEventType = "order.validated"
 )
-public Mono<Map<String, Object>> callExternalApi(WorkflowContext ctx) {
-    return externalApiClient.call()
-        .map(response -> Map.of("data", response));
+public Mono<Map<String, Object>> validate(WorkflowContext ctx) {
+    return Mono.just(Map.of("valid", true));
+}
+
+@WorkflowStep(
+    id = "process-payment",
+    triggerMode = StepTriggerMode.EVENT,
+    inputEventType = "order.validated",
+    outputEventType = "payment.processed"
+)
+public Mono<Map<String, Object>> processPayment(WorkflowContext ctx) {
+    return Mono.just(Map.of("paymentId", "PAY-123"));
 }
 ```
 
-### Workflow-Level Defaults
+When a step completes and has an `outputEventType`, the engine publishes an event with that type. Steps listening for that event via `inputEventType` are triggered.
+
+### Manual Step Triggering
+
+Steps with `PROGRAMMATIC` or `BOTH` trigger mode can be triggered via the REST API or `WorkflowEngine.triggerStep()`:
 
 ```java
-@Workflow(
-    id = "my-workflow",
-    maxRetries = 5,        // Default for all steps
-    retryDelayMs = 2000    // Default delay
-)
-public class MyWorkflow {
-    // Steps inherit these defaults unless overridden
-}
+workflowEngine.triggerStep(
+    "order-processing", instanceId, "process-payment",
+    Map.of("paymentMethod", "credit"), "api"
+);
 ```
+
+---
+
+## Resilience4j Integration
+
+The workflow engine integrates with Resilience4j for per-step fault tolerance. Resilience patterns are applied with the following order: **TimeLimiter -> Bulkhead -> RateLimiter -> CircuitBreaker**.
+
+Each pattern uses a unique identifier per step: `{workflowId}:{stepId}`, ensuring that failures in one step do not affect other steps.
+
+### Circuit Breaker
+
+Prevents cascading failures by stopping calls to failing steps.
+
+```yaml
+firefly:
+  workflow:
+    resilience:
+      enabled: true
+      circuit-breaker:
+        enabled: true
+        failure-rate-threshold: 50
+        slow-call-rate-threshold: 100
+        slow-call-duration-threshold: 60s
+        permitted-number-of-calls-in-half-open-state: 10
+        minimum-number-of-calls: 10
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 100
+        wait-duration-in-open-state: 60s
+        automatic-transition-from-open-to-half-open-enabled: true
+```
+
+State transitions: `CLOSED` -> `OPEN` (failure rate exceeded) -> `HALF_OPEN` (wait duration elapsed) -> `CLOSED` (test calls succeed) or back to `OPEN` (test calls fail).
+
+### Rate Limiter
+
+Controls the rate of step executions. Disabled by default.
+
+```yaml
+firefly:
+  workflow:
+    resilience:
+      rate-limiter:
+        enabled: true
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 5s
+```
+
+### Bulkhead
+
+Limits concurrent step executions. Disabled by default.
+
+```yaml
+firefly:
+  workflow:
+    resilience:
+      bulkhead:
+        enabled: true
+        max-concurrent-calls: 25
+        max-wait-duration: 0ms
+```
+
+### Time Limiter
+
+Enforces timeouts on step execution. Enabled by default.
+
+```yaml
+firefly:
+  workflow:
+    resilience:
+      time-limiter:
+        enabled: true
+        timeout-duration: 5m
+        cancel-running-future: true
+```
+
+---
+
+## Retry Configuration
+
+Retries are configured at three levels. Step-level overrides workflow-level, which overrides global configuration.
 
 ### Global Configuration
 
@@ -592,89 +316,49 @@ firefly:
   workflow:
     retry:
       max-attempts: 3
-      initial-delay: PT1S
-      max-delay: PT5M
-      multiplier: 2.0  # Exponential backoff
+      initial-delay: 1s
+      max-delay: 5m
+      multiplier: 2.0
 ```
 
-## Lifecycle Hooks
+The `multiplier` controls exponential backoff: each retry delay is multiplied by this factor, capped at `max-delay`.
 
-Respond to workflow and step lifecycle events.
+### Workflow-Level Defaults
 
 ```java
-@Workflow(id = "my-workflow")
-public class MyWorkflow {
-
-    @OnStepComplete
-    public void onStepComplete(WorkflowContext ctx, StepExecution step) {
-        log.info("Step {} completed: {}", step.stepId(), step.status());
-        // Send metrics, update external systems, etc.
-    }
-
-    @OnWorkflowComplete
-    public void onWorkflowComplete(WorkflowContext ctx) {
-        log.info("Workflow {} completed", ctx.getInstanceId());
-        // Cleanup, notifications, etc.
-    }
-
-    @OnWorkflowError
-    public void onWorkflowError(WorkflowContext ctx, Throwable error) {
-        log.error("Workflow {} failed: {}", ctx.getInstanceId(), error.getMessage());
-        // Alert, compensate, etc.
-    }
-}
+@Workflow(
+    id = "my-workflow",
+    maxRetries = 5,
+    retryDelayMs = 2000
+)
+public class MyWorkflow { ... }
 ```
 
-## Programmatic Step Handlers
-
-For reusable step logic, implement `StepHandler<T>`:
+### Step-Level Overrides
 
 ```java
-@Component("validateOrderStep")
-public class ValidateOrderStepHandler implements StepHandler<ValidationResult> {
-
-    private final ValidationService validationService;
-
-    @Override
-    public Mono<ValidationResult> execute(WorkflowContext context) {
-        String orderId = context.getInput("orderId", String.class);
-        return validationService.validate(orderId);
-    }
-
-    @Override
-    public boolean shouldSkip(WorkflowContext context) {
-        return "internal".equals(context.getInput("source", String.class));
-    }
-}
+@WorkflowStep(
+    id = "call-external-api",
+    maxRetries = 3,
+    retryDelayMs = 1000
+)
+public Mono<Map<String, Object>> callExternalApi(WorkflowContext ctx) { ... }
 ```
 
-Register programmatically:
+A value of `-1` for `maxRetries` or `retryDelayMs` on `@WorkflowStep` means "use the workflow default."
 
-```java
-WorkflowDefinition definition = WorkflowDefinition.builder()
-    .workflowId("programmatic-workflow")
-    .name("Programmatic Workflow")
-    .addStep(WorkflowStepDefinition.builder()
-        .stepId("validate")
-        .name("Validate Order")
-        .order(1)
-        .handlerBeanName("validateOrderStep")
-        .build())
-    .build();
+---
 
-workflowEngine.registerWorkflow(definition);
-```
+## Scheduled Workflows
 
-## Scheduled Workflows (Cron)
+Workflows can be scheduled for automatic execution using `@ScheduledWorkflow`. The annotation is `@Repeatable`, so multiple schedules can be applied to one workflow.
 
-Schedule workflows to run automatically using cron expressions or fixed intervals.
-
-### @ScheduledWorkflow Annotation
+### Cron-Based Scheduling
 
 ```java
 @Workflow(id = "daily-report")
 @ScheduledWorkflow(
-    cron = "0 0 2 * * *",              // Run at 2 AM daily
+    cron = "0 0 2 * * *",
     zone = "America/New_York",
     description = "Daily report generation",
     input = "{\"type\": \"daily\"}"
@@ -687,32 +371,26 @@ public class DailyReportWorkflow {
 }
 ```
 
-### Annotation Attributes
+### Fixed Delay and Fixed Rate
 
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `cron` | String | Cron expression (Spring format) |
-| `zone` | String | Timezone (default: system default) |
-| `fixedDelay` | long | Fixed delay in ms between runs |
-| `fixedRate` | long | Fixed rate in ms between runs |
-| `initialDelay` | long | Initial delay in ms before first run |
-| `input` | String | JSON input for the workflow |
-| `description` | String | Description for logging |
+```java
+// Execute every 30 seconds after the previous run completes
+@ScheduledWorkflow(fixedDelay = 30000)
+
+// Execute every 60 seconds regardless of previous run duration
+@ScheduledWorkflow(fixedRate = 60000, initialDelay = 5000)
+```
 
 ### Multiple Schedules
 
-Use `@ScheduledWorkflows` for multiple schedules:
-
 ```java
 @Workflow(id = "multi-schedule")
-@ScheduledWorkflows({
-    @ScheduledWorkflow(cron = "0 0 * * * *", input = "{\"mode\": \"hourly\"}"),
-    @ScheduledWorkflow(cron = "0 0 0 * * *", input = "{\"mode\": \"daily\"}")
-})
+@ScheduledWorkflow(cron = "0 0 * * * *", input = "{\"mode\": \"hourly\"}")
+@ScheduledWorkflow(cron = "0 0 0 * * *", input = "{\"mode\": \"daily\"}")
 public class MultiScheduleWorkflow { ... }
 ```
 
-### Configuration
+### Scheduling Configuration
 
 ```yaml
 firefly:
@@ -720,20 +398,124 @@ firefly:
     scheduling:
       enabled: true
       pool-size: 5
+      thread-name-prefix: workflow-scheduler-
+      wait-for-tasks-to-complete-on-shutdown: true
+      await-termination-seconds: 30
 ```
+
+---
+
+## Dead Letter Queue (DLQ)
+
+When a workflow fails after exhausting all retries, it is automatically saved to the Dead Letter Queue if `dlq.auto-save-on-failure` is `true` (the default). The DLQ is backed by `CacheDeadLetterStore`.
+
+### Configuration
+
+```yaml
+firefly:
+  workflow:
+    dlq:
+      enabled: true
+      max-replay-attempts: 3
+      retention-period: 30d
+      auto-save-on-failure: true
+      include-stack-trace: true
+```
+
+### REST API
+
+```http
+GET  /api/v1/workflows/dlq                        # List entries
+GET  /api/v1/workflows/dlq?workflowId=my-workflow  # Filter by workflow
+GET  /api/v1/workflows/dlq/count                   # Get count
+GET  /api/v1/workflows/dlq/{entryId}               # Get entry
+POST /api/v1/workflows/dlq/{entryId}/replay        # Replay entry
+POST /api/v1/workflows/dlq/replay?workflowId=...   # Replay all for workflow
+DELETE /api/v1/workflows/dlq/{entryId}              # Delete entry
+DELETE /api/v1/workflows/dlq?workflowId=...         # Delete by workflow
+DELETE /api/v1/workflows/dlq/all                    # Delete all
+```
+
+### Programmatic Access
+
+```java
+@Autowired
+private DeadLetterService deadLetterService;
+
+// List all entries
+Flux<DeadLetterEntry> entries = deadLetterService.getAllEntries();
+
+// List by workflow ID
+Flux<DeadLetterEntry> entries = deadLetterService.getEntriesByWorkflowId("order-processing");
+
+// Replay
+Mono<ReplayResult> result = deadLetterService.replay("dlq-123");
+
+// Replay with modified input
+Mono<ReplayResult> result = deadLetterService.replay("dlq-123", Map.of("retryToken", "new"));
+
+// Replay all for a workflow
+Flux<ReplayResult> results = deadLetterService.replayByWorkflowId("order-processing");
+
+// Get count
+Mono<Long> count = deadLetterService.getCount();
+
+// Delete
+Mono<Boolean> deleted = deadLetterService.delete("dlq-123");
+Mono<Long> count = deadLetterService.deleteByWorkflowId("order-processing");
+Mono<Long> count = deadLetterService.deleteAll();
+```
+
+---
+
+## Crash Recovery
+
+The `WorkflowRecoveryService` detects and recovers stale workflow instances that were interrupted by process crashes. A workflow instance is considered stale if it has been in `RUNNING` status longer than the configured threshold.
+
+### Configuration
+
+```yaml
+firefly:
+  workflow:
+    recovery:
+      enabled: true
+      stale-threshold: 5m
+```
+
+The recovery service is created by `WorkflowEngineAutoConfiguration` when `recovery.enabled` is `true`. It uses `WorkflowStateStore.findStaleInstances(Duration)` to locate stale instances.
+
+**Limitation with durable execution:** `EventSourcedWorkflowStateStore.findStaleInstances()` returns `Flux.empty()` because it requires read-side projections that are not yet built. In durable execution mode, crash recovery relies on event replay rather than stale instance detection.
+
+---
 
 ## Dry-Run Mode
 
-Test workflows without executing side effects.
+Dry-run mode allows testing workflow definitions without executing side effects. The `isDryRun()` flag is set on the `WorkflowContext` and can be checked in step methods.
 
 ### Starting in Dry-Run Mode
 
-```bash
+Via REST API:
+
+```http
 POST /api/v1/workflows/order-processing/start
+Content-Type: application/json
+
 {
   "input": {"orderId": "TEST-123"},
   "dryRun": true
 }
+```
+
+Via Java API:
+
+```java
+Mono<WorkflowInstance> instance = workflowEngine.startWorkflow(
+    "order-processing",
+    Map.of("orderId", "TEST-123"),
+    null,       // correlationId
+    "test",     // triggeredBy
+    true        // dryRun
+);
 ```
 
 ### Checking Dry-Run in Steps
@@ -750,695 +532,162 @@ public Mono<Map<String, Object>> sendEmail(WorkflowContext ctx) {
 }
 ```
 
-### Programmatic Dry-Run
+The workflow engine sets `_dryRun` in both the input map and the context data, so `ctx.isDryRun()` is available in all steps.
 
-```java
-Mono<WorkflowInstance> instance = workflowEngine.startWorkflow(
-    "order-processing",
-    Map.of("orderId", "TEST-123"),
-    null,       // correlationId
-    "test",     // triggeredBy
-    true        // dryRun
-);
-```
+---
 
-## Workflow Suspension & Resumption
+## Workflow Suspension and Resumption
 
-Pause workflows during incidents and resume them later.
-
-### Suspend a Workflow
-
-```bash
-POST /api/v1/workflows/order-processing/instances/inst-123/suspend
-{
-  "reason": "Downstream payment service outage"
-}
-```
-
-### Resume a Workflow
-
-```bash
-POST /api/v1/workflows/order-processing/instances/inst-123/resume
-```
-
-### Programmatic Suspension
-
-```java
-// Suspend
-Mono<WorkflowInstance> suspended = workflowEngine.suspendWorkflow(
-    "order-processing",
-    instanceId,
-    "Manual suspension for investigation"
-);
-
-// Resume
-Mono<WorkflowInstance> resumed = workflowEngine.resumeWorkflow(
-    "order-processing",
-    instanceId
-);
-
-// Find all suspended instances
-Flux<WorkflowInstance> suspended = workflowEngine.findSuspendedInstances();
-```
+Workflows can be suspended during incidents or downstream outages and resumed later.
 
 ### Status Guards
 
-```java
-WorkflowStatus status = instance.status();
-if (status.canSuspend()) {
-    // Workflow can be suspended (RUNNING or WAITING)
-}
-if (status.canResume()) {
-    // Workflow can be resumed (SUSPENDED)
-}
-```
+The `WorkflowStatus` enum provides guard methods:
 
-## Dead Letter Queue (DLQ) Management
+- `canSuspend()` returns `true` for `RUNNING` and `WAITING`
+- `canResume()` returns `true` for `SUSPENDED`
 
-Manage and replay failed workflows.
-
-### Auto-Save on Failure
-
-When a workflow fails after exhausting retries, it's automatically saved to the DLQ:
-
-```yaml
-firefly:
-  workflow:
-    dlq:
-      enabled: true
-      auto-save-on-failure: true
-      retention-period: P30D
-```
-
-### View DLQ Entries
-
-```bash
-GET /api/v1/workflows/dlq
-GET /api/v1/workflows/dlq?workflowId=order-processing
-```
-
-### Replay a Failed Workflow
-
-```bash
-POST /api/v1/workflows/dlq/dlq-123/replay
-{
-  "modifiedInput": {
-    "retryToken": "new-token"
-  }
-}
-```
-
-### Programmatic DLQ Access
+### Suspending
 
 ```java
-@Autowired
-private DeadLetterService dlqService;
-
-// List entries
-Flux<DeadLetterEntry> entries = dlqService.getAllEntries();
-
-// Replay an entry
-Mono<ReplayResult> result = dlqService.replay("dlq-123");
-
-// Replay with modified input
-Mono<ReplayResult> result = dlqService.replay(
-    "dlq-123",
-    Map.of("retryToken", "new-value")
+Mono<WorkflowInstance> suspended = workflowEngine.suspendWorkflow(
+    "order-processing", instanceId, "Downstream payment service outage"
 );
-
-// Delete an entry
-Mono<Boolean> deleted = dlqService.delete("dlq-123");
 ```
 
-## Topology Visualization
+A suspended workflow will not execute any further steps until resumed. The suspension reason is optional.
 
-Get workflow DAG for frontend visualization.
-
-### Get Workflow Topology
-
-```bash
-GET /api/v1/workflows/order-processing/topology
-```
-
-**Response (for React Flow / Mermaid.js):**
-
-```json
-{
-  "workflowId": "order-processing",
-  "nodes": [
-    {"id": "validate", "label": "Validate", "layer": 0},
-    {"id": "process", "label": "Process", "layer": 1}
-  ],
-  "edges": [
-    {"source": "validate", "target": "process"}
-  ]
-}
-```
-
-### Instance Topology with Status
-
-```bash
-GET /api/v1/workflows/order-processing/instances/inst-123/topology
-```
-
-Returns the same structure with `status` fields populated.
-
-### Programmatic Access
+### Resuming
 
 ```java
-Optional<WorkflowTopologyResponse> topology = 
-    workflowService.getTopology("order-processing");
-
-Mono<WorkflowTopologyResponse> instanceTopology =
-    workflowService.getTopology("order-processing", instanceId);
+Mono<WorkflowInstance> resumed = workflowEngine.resumeWorkflow(
+    "order-processing", instanceId
+);
 ```
 
-## Durable Execution Features
+On resume, the engine loads the workflow definition (matching the version the instance was started with) and continues execution from the current step.
 
-The following features require event sourcing to be enabled (`firefly.workflow.eventsourcing.enabled: true`). They provide Temporal.io-like durable execution capabilities for long-running business processes.
+### Finding Suspended Instances
 
-### Signals
-
-Signals allow external systems to send named data to running workflow instances. Steps can block until a signal arrives, and signals are buffered if they arrive before any step waits for them.
-
-#### Sending a Signal
+```java
+Flux<WorkflowInstance> suspended = workflowEngine.findSuspendedInstances();
+```
 
 Via REST API:
 
-```bash
-POST /api/v1/workflows/order-processing/instances/inst-789/signal
-Content-Type: application/json
+```http
+GET /api/v1/workflows/suspended
+```
 
-{
-  "signalName": "approval-received",
-  "payload": {
-    "approvedBy": "manager@company.com",
-    "approved": true
-  }
+---
+
+## Lifecycle Callbacks
+
+Lifecycle callbacks allow responding to workflow and step events within the workflow class.
+
+### @OnStepComplete
+
+Called after each step completes. Can filter by specific step IDs.
+
+```java
+@OnStepComplete(stepIds = {"validate", "process"})
+public void onStepComplete(WorkflowContext ctx, StepExecution step) {
+    log.info("Step {} completed with status {}", step.stepId(), step.status());
 }
 ```
 
-Or programmatically:
+| Attribute | Default | Description |
+|-----------|---------|-------------|
+| `stepIds` | `{}` | Filter by step IDs (empty = all steps) |
+| `async` | `true` | Execute asynchronously |
+| `priority` | `0` | Execution priority (lower = higher) |
+
+### @OnWorkflowComplete
+
+Called when the workflow completes successfully.
 
 ```java
-workflowEngine.signal(
-    "order-processing",
-    instanceId,
-    "approval-received",
-    Map.of("approvedBy", "manager@company.com", "approved", true)
-);
-```
-
-#### Waiting for a Signal in a Step
-
-Use the `@WaitForSignal` annotation to pause a step until a named signal arrives:
-
-```java
-@WorkflowStep(id = "wait-for-approval", dependsOn = {"submit-request"})
-@WaitForSignal(name = "approval-received", timeoutDuration = "P7D", timeoutAction = FAIL)
-public Mono<Map<String, Object>> waitForApproval(WorkflowContext ctx) {
-    Map<String, Object> signal = ctx.getSignal("approval-received");
-    boolean approved = (boolean) signal.get("approved");
-    return Mono.just(Map.of("approved", approved));
+@OnWorkflowComplete
+public void onComplete(WorkflowContext ctx, WorkflowInstance instance) {
+    log.info("Workflow {} completed", instance.instanceId());
 }
 ```
 
-#### Signal Buffering
+### @OnWorkflowError
 
-If a signal arrives before any step waits for it, the signal is stored in the `pendingSignals` buffer. When a step declares a wait, the buffer is checked first. Configure the buffer size:
-
-```yaml
-firefly:
-  workflow:
-    signals:
-      enabled: true
-      buffer-size: 100
-```
-
-#### Signal with Timeout
-
-Combine a signal wait with a timeout for escalation patterns:
+Called when the workflow fails. Can filter by exception types and step IDs. Can optionally suppress the error.
 
 ```java
-@WorkflowStep(id = "wait-for-payment")
-@WaitForSignal(
-    name = "payment-confirmed",
-    timeoutDuration = "PT24H",
-    timeoutAction = ESCALATE  // or FAIL, SKIP, CONTINUE
+@OnWorkflowError(
+    errorTypes = {TimeoutException.class},
+    stepIds = {"process-payment"},
+    suppressError = false
 )
-public Mono<Map<String, Object>> waitForPayment(WorkflowContext ctx) {
-    if (ctx.isTimedOut()) {
-        return Mono.just(Map.of("escalated", true));
-    }
-    return Mono.just(ctx.getSignal("payment-confirmed"));
+public void onError(WorkflowContext ctx, WorkflowInstance instance, Throwable error) {
+    log.error("Payment step timed out: {}", error.getMessage());
 }
 ```
 
-### Durable Timers
+When `suppressError = true`, the error is caught and the workflow does not transition to `FAILED`.
 
-Per-instance timers that survive process restarts. Timer state is persisted as domain events and a materialized projection is polled by the `TimerSchedulerService`.
+---
 
-#### Timer Types
+## Programmatic Step Handlers
 
-| Type | Description | Example |
-|------|-------------|---------|
-| Duration-based | Fire after a relative duration | "fire in 7 days" |
-| Absolute | Fire at a specific instant | "fire at 2026-03-01T09:00:00Z" |
-| Recurring | Re-registers after each fire | "fire every hour" |
-
-#### Using Timers in Steps
+For reusable step logic across multiple workflows, implement the `StepHandler<T>` interface and register it as a Spring bean.
 
 ```java
-@WorkflowStep(id = "schedule-reminder", dependsOn = {"create-order"})
-public Mono<Map<String, Object>> scheduleReminder(WorkflowContext ctx) {
-    // Duration-based timer
-    ctx.registerTimer("payment-reminder", Duration.ofDays(3));
+@Component("validateOrderStep")
+public class ValidateOrderStepHandler implements StepHandler<ValidationResult> {
 
-    // Absolute timer
-    ctx.registerTimer("deadline", Instant.parse("2026-03-01T09:00:00Z"));
+    private final ValidationService validationService;
 
-    return Mono.just(Map.of("reminderScheduled", true));
-}
-
-@WorkflowStep(id = "handle-reminder")
-@WaitForTimer("payment-reminder")
-public Mono<Map<String, Object>> handleReminder(WorkflowContext ctx) {
-    return notificationService.sendReminder(ctx.getInput("email", String.class))
-        .map(result -> Map.of("reminderSent", true));
-}
-```
-
-#### Timer Configuration
-
-```yaml
-firefly:
-  workflow:
-    timers:
-      enabled: true
-      poll-interval: PT1S   # How often to check for due timers
-      batch-size: 50         # Max timers to fire per poll cycle
-```
-
-### Child Workflows
-
-Parent workflows can spawn child workflows, wait for their completion, and use their results. Child workflows are separate `WorkflowAggregate` instances with their own event history.
-
-#### Using @ChildWorkflow
-
-```java
-@WorkflowStep(id = "process-items", dependsOn = {"validate-order"})
-@ChildWorkflow(workflowId = "item-processing", waitForCompletion = true)
-public Mono<Map<String, Object>> processItems(WorkflowContext ctx) {
-    List<String> itemIds = ctx.getInput("itemIds", List.class);
-
-    // Spawn child workflows for each item
-    List<Mono<Object>> children = itemIds.stream()
-        .map(itemId -> ctx.spawnChildWorkflow(
-            "item-processing",
-            Map.of("itemId", itemId)
-        ))
-        .toList();
-
-    return Flux.merge(children)
-        .collectList()
-        .map(results -> Map.of("processedItems", results));
-}
-```
-
-#### Parent-Child Lifecycle
-
-- Parent records `ChildWorkflowSpawnedEvent` when spawning a child
-- Child is a separate `WorkflowAggregate` with its own event history
-- On child completion, the engine calls `parent.completeChildWorkflow()`
-- **Cascading cancellation**: Cancelling the parent automatically cancels all active children
-- **Child failure handling**: Configurable to fail parent, retry child, or trigger compensation
-
-#### Nesting Depth Limit
-
-To prevent runaway recursion, child workflows have a configurable maximum nesting depth:
-
-```yaml
-firefly:
-  workflow:
-    child-workflows:
-      enabled: true
-      max-depth: 5
-```
-
-### Continue-As-New
-
-Long-running workflows accumulate events over time. `Continue-As-New` resets the event history by completing the current aggregate and starting a new one with the same workflow identity.
-
-#### Manual Continue-As-New
-
-```java
-@WorkflowStep(id = "check-and-continue")
-public Mono<Map<String, Object>> checkAndContinue(WorkflowContext ctx) {
-    int iteration = ctx.getInput("iteration", Integer.class);
-
-    if (shouldContinue(iteration)) {
-        ctx.continueAsNew(Map.of("iteration", iteration + 1));
-        return Mono.empty(); // workflow will restart with new input
+    public ValidateOrderStepHandler(ValidationService validationService) {
+        this.validationService = validationService;
     }
 
-    return Mono.just(Map.of("finalIteration", iteration));
-}
-```
-
-#### Automatic Continue-As-New
-
-Configure a threshold to trigger continue-as-new automatically when the event count exceeds the limit:
-
-```yaml
-firefly:
-  workflow:
-    eventsourcing:
-      max-events-before-continue-as-new: 1000
-```
-
-When triggered:
-- The current aggregate is marked `COMPLETED` with a `ContinueAsNewEvent`
-- A new aggregate is created with the same `workflowId` and `correlationId`, plus a `previousRunId` reference
-- Active timers and pending signals are migrated to the new run
-
-### Side Effects
-
-Side effects capture the result of non-deterministic operations (such as generating UUIDs or reading the current time) so that they produce the same value during replay.
-
-#### Using ctx.sideEffect()
-
-```java
-@WorkflowStep(id = "generate-id")
-public Mono<Map<String, Object>> generateId(WorkflowContext ctx) {
-    // First execution: supplier runs, value stored as SideEffectRecordedEvent
-    // Replay: stored value returned, supplier NOT called
-    String uniqueId = ctx.sideEffect("order-id", () -> UUID.randomUUID().toString());
-    Instant timestamp = ctx.sideEffect("created-at", () -> Instant.now());
-
-    return Mono.just(Map.of(
-        "orderId", uniqueId,
-        "createdAt", timestamp.toString()
-    ));
-}
-```
-
-The first execution runs the supplier and records a `SideEffectRecordedEvent`. On replay, the stored value is returned without invoking the supplier, ensuring deterministic behavior.
-
-### Heartbeating
-
-Long-running steps can report progress via heartbeats. This allows the engine to distinguish between a step that is stuck and one that is making progress, and provides resume information on recovery.
-
-#### Using ctx.heartbeat()
-
-```java
-@WorkflowStep(id = "process-large-dataset", timeoutMs = 3600000)
-public Mono<Map<String, Object>> processLargeDataset(WorkflowContext ctx) {
-    List<Record> records = loadRecords();
-    int lastProcessed = ctx.getLastHeartbeatDetails("lastIndex", Integer.class, 0);
-
-    for (int i = lastProcessed; i < records.size(); i++) {
-        process(records.get(i));
-        ctx.heartbeat(Map.of("lastIndex", i, "progress", (i * 100) / records.size()));
+    @Override
+    public Mono<ValidationResult> execute(WorkflowContext context) {
+        String orderId = context.getInput("orderId", String.class);
+        return validationService.validate(orderId);
     }
 
-    return Mono.just(Map.of("totalProcessed", records.size()));
-}
-```
-
-Key behaviors:
-- Heartbeats are stored as `HeartbeatRecordedEvent` (throttled to avoid excessive writes)
-- Heartbeat timeout is separate from step timeout
-- On recovery, the last heartbeat details are available via `ctx.getLastHeartbeatDetails()` for resuming work
-
-```yaml
-firefly:
-  workflow:
-    heartbeat:
-      enabled: true
-      throttle-interval: PT5S  # Minimum interval between persisted heartbeats
-```
-
-### Compensation Orchestration
-
-When a workflow step fails, the engine can automatically run compensation logic on previously completed steps in reverse order. This provides saga-like rollback behavior within the durable execution model.
-
-#### Defining Compensation Steps
-
-Use the `@CompensationStep` annotation to declare compensation logic for a step:
-
-```java
-@Workflow(id = "order-fulfillment")
-public class OrderFulfillmentWorkflow {
-
-    @WorkflowStep(id = "reserve-inventory", dependsOn = {"validate"})
-    public Mono<Map<String, Object>> reserveInventory(WorkflowContext ctx) {
-        return inventoryService.reserve(ctx.getInput("items", List.class))
-            .map(res -> Map.of("reservationId", res.id()));
+    @Override
+    public Mono<Void> compensate(WorkflowContext context) {
+        return Mono.empty();
     }
 
-    @CompensationStep(compensates = "reserve-inventory")
-    public Mono<Void> releaseInventory(WorkflowContext ctx) {
-        String reservationId = ctx.getStepOutput("reserve-inventory", Map.class)
-            .get("reservationId").toString();
-        return inventoryService.release(reservationId);
-    }
-
-    @WorkflowStep(id = "charge-payment", dependsOn = {"reserve-inventory"})
-    public Mono<Map<String, Object>> chargePayment(WorkflowContext ctx) {
-        return paymentService.charge(ctx.getInput("amount", BigDecimal.class))
-            .map(res -> Map.of("chargeId", res.id()));
-    }
-
-    @CompensationStep(compensates = "charge-payment")
-    public Mono<Void> refundPayment(WorkflowContext ctx) {
-        String chargeId = ctx.getStepOutput("charge-payment", Map.class)
-            .get("chargeId").toString();
-        return paymentService.refund(chargeId);
+    @Override
+    public boolean shouldSkip(WorkflowContext context) {
+        return "internal".equals(context.getInput("source", String.class));
     }
 }
 ```
 
-#### Compensation Policies
-
-| Policy | Behavior |
-|--------|----------|
-| `STRICT_SEQUENTIAL` | Compensate in reverse order, stop on first compensation error |
-| `BEST_EFFORT` | Compensate all steps in reverse order, collect all errors |
-| `SKIP` | No compensation, workflow fails immediately |
-
-Configure the default policy:
-
-```yaml
-firefly:
-  workflow:
-    compensation:
-      enabled: true
-      default-policy: STRICT_SEQUENTIAL
-```
-
-#### Compensation Flow
-
-When a step fails and compensation is triggered:
-
-1. `CompensationStartedEvent` is recorded with the failed step and policy
-2. Completed steps are compensated in reverse order
-3. Each successful compensation records a `CompensationStepCompletedEvent`
-4. After all compensations complete (or on first failure in `STRICT_SEQUENTIAL`), a `WorkflowFailedEvent` is recorded
-
-### Search Attributes
-
-Search attributes are custom indexed fields that allow you to discover and filter workflow instances by business-relevant data.
-
-#### Setting Search Attributes
+Reference the bean in a programmatic workflow definition:
 
 ```java
-@WorkflowStep(id = "process-order")
-public Mono<Map<String, Object>> processOrder(WorkflowContext ctx) {
-    String customerId = ctx.getInput("customerId", String.class);
-    String region = ctx.getInput("region", String.class);
+WorkflowDefinition definition = WorkflowDefinition.builder()
+    .workflowId("programmatic-workflow")
+    .name("Programmatic Workflow")
+    .addStep(WorkflowStepDefinition.builder()
+        .stepId("validate")
+        .name("Validate Order")
+        .order(1)
+        .handlerBeanName("validateOrderStep")
+        .build())
+    .build();
 
-    ctx.upsertSearchAttribute("customerId", customerId);
-    ctx.upsertSearchAttribute("region", region);
-    ctx.upsertSearchAttribute("orderStatus", "PROCESSING");
-
-    return orderService.process(ctx.getInput("orderId", String.class))
-        .map(result -> Map.of("processed", true));
-}
+workflowEngine.registerWorkflow(definition);
 ```
 
-Each call records a `SearchAttributeUpdatedEvent` in the event history. A projection materializes these attributes into an indexed R2DBC table for efficient querying.
-
-#### Searching by Attributes
-
-Via REST API:
-
-```bash
-GET /api/v1/workflows/search?customerId=CUST-123&region=us-east
-```
-
-Or programmatically:
-
-```java
-Flux<WorkflowInstance> instances = workflowEngine.searchByAttributes(
-    Map.of("customerId", "CUST-123", "region", "us-east")
-);
-```
-
-```yaml
-firefly:
-  workflow:
-    search-attributes:
-      enabled: true
-```
-
-### Queries
-
-Queries provide read-only inspection of running workflow internal state. Both built-in and custom queries are supported.
-
-#### Built-in Queries
-
-The engine provides several built-in queries:
-
-| Query Name | Description |
-|------------|-------------|
-| `getStatus` | Current workflow status |
-| `getCurrentStep` | Currently executing step |
-| `getStepHistory` | All step execution records |
-| `getContext` | Workflow context data |
-| `getSearchAttributes` | Current search attribute values |
-
-#### Custom Queries
-
-Define custom queries by annotating methods with `@WorkflowQuery`:
-
-```java
-@Workflow(id = "order-processing")
-public class OrderProcessingWorkflow {
-
-    @WorkflowQuery("orderSummary")
-    public Map<String, Object> getOrderSummary(WorkflowContext ctx) {
-        return Map.of(
-            "orderId", ctx.getInput("orderId", String.class),
-            "status", ctx.get("orderStatus", String.class),
-            "itemCount", ctx.get("itemCount", Integer.class),
-            "totalAmount", ctx.get("totalAmount", BigDecimal.class)
-        );
-    }
-
-    @WorkflowQuery("processingProgress")
-    public Map<String, Object> getProgress(WorkflowContext ctx) {
-        int completed = ctx.get("completedItems", Integer.class, 0);
-        int total = ctx.get("totalItems", Integer.class, 0);
-        return Map.of(
-            "completedItems", completed,
-            "totalItems", total,
-            "percentComplete", total > 0 ? (completed * 100) / total : 0
-        );
-    }
-}
-```
-
-#### Executing Queries
-
-Via REST API:
-
-```bash
-GET /api/v1/workflows/order-processing/instances/inst-789/query/orderSummary
-```
-
-Response:
-
-```json
-{
-  "orderId": "ORD-123",
-  "status": "PROCESSING",
-  "itemCount": 5,
-  "totalAmount": 299.99
-}
-```
-
-Or programmatically:
-
-```java
-Mono<Map<String, Object>> summary = workflowEngine.query(
-    "order-processing",
-    instanceId,
-    "orderSummary"
-);
-```
-
-### Composite Waits (@WaitForAll / @WaitForAny)
-
-Composite wait annotations allow combining multiple wait conditions on a single step. This is useful when a step needs to wait for a combination of signals, timers, or other conditions before proceeding.
-
-#### @WaitForAll
-
-`@WaitForAll` blocks the step until **all** specified conditions are satisfied. The step executes only when every condition has been met:
-
-```java
-@WorkflowStep(id = "process-after-all-approvals", dependsOn = {"submit-request"})
-@WaitForAll({
-    @WaitForSignal(name = "manager-approval", timeoutDuration = "P7D"),
-    @WaitForSignal(name = "finance-approval", timeoutDuration = "P7D")
-})
-public Mono<Map<String, Object>> processAfterAllApprovals(WorkflowContext ctx) {
-    Map<String, Object> managerApproval = ctx.getSignal("manager-approval");
-    Map<String, Object> financeApproval = ctx.getSignal("finance-approval");
-    return Mono.just(Map.of(
-        "managerApproved", managerApproval.get("approved"),
-        "financeApproved", financeApproval.get("approved")
-    ));
-}
-```
-
-You can also combine signals with timers. For example, wait for an approval signal AND a minimum delay:
-
-```java
-@WorkflowStep(id = "delayed-approval")
-@WaitForAll({
-    @WaitForSignal(name = "approval"),
-    @WaitForTimer(duration = "PT1H")  // Enforce a minimum 1-hour cooling period
-})
-public Mono<Map<String, Object>> delayedApproval(WorkflowContext ctx) {
-    return Mono.just(ctx.getSignal("approval"));
-}
-```
-
-#### @WaitForAny
-
-`@WaitForAny` blocks the step until **any one** of the specified conditions is satisfied. The step executes as soon as the first condition is met:
-
-```java
-@WorkflowStep(id = "wait-for-response", dependsOn = {"send-request"})
-@WaitForAny({
-    @WaitForSignal(name = "response-received"),
-    @WaitForTimer(duration = "PT24H")  // Timeout after 24 hours
-})
-public Mono<Map<String, Object>> handleResponse(WorkflowContext ctx) {
-    Map<String, Object> signal = ctx.getSignal("response-received");
-    if (signal != null) {
-        return Mono.just(Map.of("responseReceived", true, "data", signal));
-    }
-    // Timer fired first - treat as timeout
-    return Mono.just(Map.of("responseReceived", false, "timedOut", true));
-}
-```
-
-This pattern is especially useful for implementing timeout-or-response races, where you want to proceed with a fallback if a signal does not arrive within a time window.
-
-#### How Composite Waits Work
-
-Composite wait conditions are evaluated by the `CompositeWaitEvaluator`:
-
-1. When a step with `@WaitForAll` or `@WaitForAny` begins, the evaluator registers all individual conditions (signals, timers)
-2. As each condition is satisfied (signal received, timer fired), the evaluator re-checks the composition rule
-3. For `@WaitForAll`: the step proceeds when **every** condition is met
-4. For `@WaitForAny`: the step proceeds when **at least one** condition is met
-5. All condition states are persisted as domain events, ensuring correct behavior across replays
+---
 
 ## Next Steps
 
-- [Getting Started](getting-started.md) - Basic tutorial
-- [Architecture](architecture.md) - System design
-- [Configuration Reference](configuration.md) - All configuration options
-- [API Reference](api-reference.md) - REST and Java API documentation
+- [Getting Started](getting-started.md) -- Prerequisites, cache setup, first workflow
+- [Architecture](architecture.md) -- Internal components and execution model
+- [Configuration](configuration.md) -- Complete property reference with defaults
+- [API Reference](api-reference.md) -- REST endpoints and Java API
+- [Durable Execution](durable-execution.md) -- Signals, timers, child workflows, compensation
+- [Testing](testing.md) -- Unit and integration testing strategies

@@ -1,376 +1,417 @@
-# Getting Started with Firefly Workflow Engine
+# Getting Started
 
-This guide walks you through setting up and using the Firefly Workflow Engine in your Spring Boot application. The library is designed primarily for **event-driven workflows** where workflows are triggered by events and steps communicate through event-based choreography.
+This guide walks through setting up the Firefly Workflow Engine from scratch, creating your first workflow, and understanding the core concepts.
 
 ## Prerequisites
 
-- Java 21 or later
+- Java 21+
 - Spring Boot 3.x application
-- Maven or Gradle build tool
-- Redis (for state persistence) or Caffeine (for in-memory)
-- Kafka or RabbitMQ (recommended for event-driven workflows)
+- Maven 3.9+
 
-## Installation
+## Dependencies
 
-Add the dependency to your `pom.xml`:
+Add `fireflyframework-workflow` to your `pom.xml`:
 
 ```xml
 <dependency>
     <groupId>org.fireflyframework</groupId>
-    <artifactId>fireflyframework-workflow-engine</artifactId>
+    <artifactId>fireflyframework-workflow</artifactId>
     <version>26.02.06</version>
 </dependency>
 ```
 
-The library auto-configures itself when added to your classpath. No additional configuration is required for basic usage.
+This transitively includes `fireflyframework-cache`, `fireflyframework-eda`, and `fireflyframework-eventsourcing`.
 
-## Step 1: Create Your First Workflow
+## Setting Up the Cache (Required)
 
-Create a workflow class annotated with `@Workflow`:
+The default execution mode uses `fireflyframework-cache` for state persistence. A `CacheAdapter` bean **must** be available for `CacheWorkflowStateStore` and `CacheStepStateStore` to be created. Without it, the workflow engine cannot persist state.
 
-```java
-package com.example.workflows;
+The auto-configuration uses `@ConditionalOnBean(CacheAdapter.class)` on both `workflowStateStore` and `stepStateStore` beans, so if no `CacheAdapter` is present, these beans will not be created and the engine will fail to wire.
 
-import org.fireflyframework.workflow.annotation.Workflow;
-import org.fireflyframework.workflow.annotation.WorkflowStep;
-import org.fireflyframework.workflow.core.WorkflowContext;
-import org.fireflyframework.workflow.model.TriggerMode;
-import lombok.extern.slf4j.Slf4j;
-import reactor.core.publisher.Mono;
+### Option 1: Redis Cache
 
-import java.util.Map;
-
-@Slf4j
-@Workflow(
-    id = "hello-world",
-    name = "Hello World Workflow",
-    description = "A simple workflow to demonstrate basic concepts",
-    triggerMode = TriggerMode.BOTH
-)
-public class HelloWorldWorkflow {
-
-    @WorkflowStep(
-        id = "greet",
-        name = "Generate Greeting"
-        // No dependsOn = root step, executes first
-    )
-    public Mono<Map<String, Object>> greet(WorkflowContext ctx) {
-        String name = ctx.getInput("name", String.class);
-        String greeting = "Hello, " + (name != null ? name : "World") + "!";
-
-        log.info("Generated greeting: {}", greeting);
-        return Mono.just(Map.of("greeting", greeting));
-    }
-
-    @WorkflowStep(
-        id = "log-result",
-        name = "Log Result",
-        dependsOn = {"greet"}  // Executes after "greet" completes
-    )
-    public Mono<Map<String, Object>> logResult(WorkflowContext ctx) {
-        Map<String, Object> greetOutput = ctx.getStepOutput("greet", Map.class);
-        String greeting = (String) greetOutput.get("greeting");
-
-        log.info("Workflow completed with greeting: {}", greeting);
-        return Mono.just(Map.of("success", true, "message", greeting));
-    }
-}
+```yaml
+firefly:
+  cache:
+    enabled: true
+    redis:
+      enabled: true
+      host: localhost
+      port: 6379
+    default-cache-type: redis
 ```
 
-## Step 2: Event-Driven Workflows (Recommended)
+### Option 2: In-Memory Cache (Development Only)
 
-Event-driven workflows are the **primary and recommended pattern** for using this library. They enable loose coupling between services through event-based communication.
+```yaml
+firefly:
+  cache:
+    enabled: true
+    default-cache-type: memory
+```
 
-### Configure Event Publishing
+### Verifying Cache Setup
 
-Add event configuration to your `application.yml`:
+If the workflow engine starts but you see errors about missing `WorkflowStateStore`, confirm that:
+
+1. `firefly.cache.enabled` is `true`
+2. A cache provider (Redis or in-memory) is configured
+3. The `CacheAdapter` bean appears in your application context
+
+## Enabling the Workflow Engine
+
+The workflow engine is enabled by default when `firefly.workflow.enabled=true` (the default value). The `WorkflowEngineAutoConfiguration` class uses `@ConditionalOnProperty(prefix = "firefly.workflow", name = "enabled", havingValue = "true", matchIfMissing = true)`, so it activates automatically unless explicitly disabled.
 
 ```yaml
 firefly:
   workflow:
-    events:
-      enabled: true
-      publisher-type: KAFKA              # KAFKA, RABBITMQ, or APPLICATION_EVENT
-      default-destination: workflow-events
-      publish-step-events: true
-
-  # fireflyframework-eda configuration for Kafka
-  eda:
-    publishers:
-      kafka:
-        default:
-          enabled: true
-          bootstrap-servers: localhost:9092
+    enabled: true
 ```
 
-### Create an Event-Driven Workflow
+## Creating Your First Workflow
+
+### Annotation-Based Workflow
+
+The `@Workflow` annotation marks a class as a workflow definition. It includes `@Component`, so it is automatically registered as a Spring bean. Methods annotated with `@WorkflowStep` define the individual steps.
 
 ```java
-package com.example.workflows;
-
-import org.fireflyframework.workflow.annotation.Workflow;
-import org.fireflyframework.workflow.annotation.WorkflowStep;
+import org.fireflyframework.workflow.annotation.*;
 import org.fireflyframework.workflow.core.WorkflowContext;
-import org.fireflyframework.workflow.model.TriggerMode;
-import lombok.extern.slf4j.Slf4j;
+import org.fireflyframework.workflow.model.WorkflowInstance;
 import reactor.core.publisher.Mono;
 
 import java.util.Map;
 
-@Slf4j
 @Workflow(
     id = "order-processing",
     name = "Order Processing Workflow",
-    triggerMode = TriggerMode.ASYNC,        // Only triggered by events
-    triggerEventType = "order.created"       // Listens for this event type
+    version = "1.0.0"
 )
 public class OrderProcessingWorkflow {
 
-    @WorkflowStep(
-        id = "validate",
-        name = "Validate Order",
-        triggerMode = StepTriggerMode.EVENT,  // Event-driven (recommended)
-        inputEventType = "order.created",     // Step triggered by this event
-        outputEventType = "order.validated"   // Emits this event on completion
-    )
+    @WorkflowStep(id = "validate", name = "Validate Order", order = 1)
     public Mono<Map<String, Object>> validateOrder(WorkflowContext ctx) {
         String orderId = ctx.getInput("orderId", String.class);
-        Double amount = ctx.getInput("amount", Double.class);
-
-        log.info("Validating order: {} with amount: {}", orderId, amount);
-
-        boolean isValid = amount != null && amount > 0;
-        return Mono.just(Map.of(
-            "valid", isValid,
-            "orderId", orderId,
-            "validatedAt", System.currentTimeMillis()
-        ));
+        // Validation logic here
+        return Mono.just(Map.of("valid", true, "orderId", orderId));
     }
 
-    @WorkflowStep(
-        id = "process-payment",
-        name = "Process Payment",
-        dependsOn = {"validate"},              // Explicit dependency (recommended)
-        triggerMode = StepTriggerMode.EVENT,
-        inputEventType = "order.validated",    // Triggered by previous step's event
-        outputEventType = "payment.processed"
-    )
+    @WorkflowStep(id = "process", name = "Process Payment", order = 2,
+                   dependsOn = {"validate"})
     public Mono<Map<String, Object>> processPayment(WorkflowContext ctx) {
         Map<String, Object> validation = ctx.getStepOutput("validate", Map.class);
-        String orderId = (String) validation.get("orderId");
-
-        log.info("Processing payment for order: {}", orderId);
-
-        return Mono.just(Map.of(
-            "paymentId", "PAY-" + System.currentTimeMillis(),
-            "orderId", orderId,
-            "status", "COMPLETED"
-        ));
+        // Payment logic here
+        return Mono.just(Map.of("paymentId", "PAY-001", "status", "charged"));
     }
 
-    @WorkflowStep(
-        id = "ship-order",
-        name = "Ship Order",
-        dependsOn = {"process-payment"},       // Explicit dependency
-        triggerMode = StepTriggerMode.EVENT,
-        inputEventType = "payment.processed",
-        outputEventType = "order.shipped"
-    )
-    public Mono<Map<String, Object>> shipOrder(WorkflowContext ctx) {
-        Map<String, Object> payment = ctx.getStepOutput("process-payment", Map.class);
-        String orderId = (String) payment.get("orderId");
+    @WorkflowStep(id = "fulfill", name = "Fulfill Order", order = 3,
+                   dependsOn = {"process"})
+    public Mono<Map<String, Object>> fulfillOrder(WorkflowContext ctx) {
+        // Fulfillment logic here
+        return Mono.just(Map.of("trackingNumber", "TRK-12345"));
+    }
 
-        log.info("Shipping order: {}", orderId);
+    @OnWorkflowComplete
+    public void onComplete(WorkflowContext ctx, WorkflowInstance instance) {
+        System.out.println("Order workflow completed: " + instance.instanceId());
+    }
 
-        return Mono.just(Map.of(
-            "trackingNumber", "TRACK-" + System.currentTimeMillis(),
-            "orderId", orderId,
-            "shippedAt", System.currentTimeMillis()
-        ));
+    @OnWorkflowError
+    public void onError(WorkflowContext ctx, WorkflowInstance instance, Throwable error) {
+        System.err.println("Order workflow failed: " + error.getMessage());
     }
 }
 ```
 
-### Trigger the Workflow via Event
+**`@Workflow` attributes:**
 
-Publish an event to trigger the workflow using `fireflyframework-eda`:
+| Attribute | Default | Description |
+|-----------|---------|-------------|
+| `id` | Class name (kebab-case) | Unique workflow identifier |
+| `name` | Simple class name | Human-readable name |
+| `description` | `""` | Workflow description |
+| `version` | `"1.0.0"` | Version string |
+| `triggerMode` | `TriggerMode.BOTH` | `SYNC`, `ASYNC`, or `BOTH` |
+| `triggerEventType` | `""` | Event type that starts this workflow |
+| `timeoutMs` | `0` (uses config default) | Workflow timeout in ms |
+| `maxRetries` | `3` | Default max retries for steps |
+| `retryDelayMs` | `1000` | Initial retry delay in ms |
+| `publishEvents` | `true` | Publish lifecycle events |
+
+**`@WorkflowStep` attributes:**
+
+| Attribute | Default | Description |
+|-----------|---------|-------------|
+| `id` | Method name | Unique step identifier within the workflow |
+| `name` | Method name | Human-readable name |
+| `description` | `""` | Step description |
+| `dependsOn` | `{}` | Step IDs this step depends on |
+| `order` | `0` | Execution order (lower first, used when no `dependsOn`) |
+| `triggerMode` | `StepTriggerMode.BOTH` | `EVENT`, `PROGRAMMATIC`, or `BOTH` |
+| `inputEventType` | `""` | Event type that triggers this step |
+| `outputEventType` | `""` | Event type published on completion |
+| `timeoutMs` | `0` (uses workflow default) | Step timeout in ms |
+| `maxRetries` | `-1` (uses workflow default) | Max retries |
+| `retryDelayMs` | `-1` (uses workflow default) | Initial retry delay in ms |
+| `condition` | `""` | SpEL condition for conditional execution |
+| `async` | `false` | Execute asynchronously within its layer |
+| `compensatable` | `false` | Supports compensation on rollback |
+| `compensationMethod` | `""` | Compensation method name |
+
+Step methods can return `Mono<T>`, `T` (auto-wrapped in Mono), or `void`/`Mono<Void>`.
+
+### StepHandler Interface
+
+For reusable step logic across workflows, implement the `StepHandler<T>` interface:
 
 ```java
-@Service
-@RequiredArgsConstructor
-public class OrderService {
-    private final EventPublisher eventPublisher;
+import org.fireflyframework.workflow.core.StepHandler;
+import org.fireflyframework.workflow.core.WorkflowContext;
+import reactor.core.publisher.Mono;
+import org.springframework.stereotype.Component;
 
-    public Mono<Void> createOrder(String orderId, Double amount) {
-        // Publishing this event automatically triggers the workflow
-        return eventPublisher.publish(
-            Map.of("orderId", orderId, "amount", amount),
-            "orders",                           // Kafka topic or destination
-            Map.of("eventType", "order.created")
-        );
+@Component("validateOrderStep")
+public class ValidateOrderStepHandler implements StepHandler<ValidationResult> {
+
+    private final OrderValidator validator;
+
+    public ValidateOrderStepHandler(OrderValidator validator) {
+        this.validator = validator;
+    }
+
+    @Override
+    public Mono<ValidationResult> execute(WorkflowContext context) {
+        String orderId = context.getInput("orderId", String.class);
+        return validator.validate(orderId);
+    }
+
+    @Override
+    public Mono<Void> compensate(WorkflowContext context) {
+        // Optional: undo validation side effects on rollback
+        return Mono.empty();
+    }
+
+    @Override
+    public boolean shouldSkip(WorkflowContext context) {
+        // Optional: skip this step conditionally
+        return false;
     }
 }
 ```
 
-### How Event Flow Works
+Reference the bean in a programmatic workflow definition with `handlerBeanName("validateOrderStep")`.
 
-```
-┌─────────────────┐     order.created       ┌────────────────────────────────────┐
-│  Order Service  │ ───────────────────────▶│  WorkflowEventListener             │
-└─────────────────┘                         │  (receives event, starts           │
-                                            │   workflow instance)               │
-                                            └────────────────┬───────────────────┘
-                                                             │
-                                                             ▼
-                                            ┌────────────────────────────────────┐
-                                            │  Validate Step                     │
-                                            │  inputEventType: order.created     │
-                                            │  outputEventType: order.validated  │
-                                            └────────────────┬───────────────────┘
-                                                             │ publishes order.validated
-                                                             ▼
-                                            ┌────────────────────────────────────┐
-                                            │  Process Payment Step              │
-                                            │  inputEventType: order.validated   │
-                                            │  outputEventType: payment.processed│
-                                            └────────────────┬───────────────────┘
-                                                             │ publishes payment.processed
-                                                             ▼
-                                            ┌────────────────────────────────────┐
-                                            │  Ship Order Step                   │
-                                            │  inputEventType: payment.processed │
-                                            │  outputEventType: order.shipped    │
-                                            └────────────────────────────────────┘
-```
-
-## Step 3: Start Workflows via REST API or Programmatically
-
-For workflows with `triggerMode = TriggerMode.BOTH`, you can also start them directly:
-
-### Via REST API
-
-```bash
-curl -X POST http://localhost:8080/api/workflows/hello-world/start \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"name": "Developer"}}'
-```
-
-Response:
-```json
-{
-  "instanceId": "550e8400-e29b-41d4-a716-446655440000",
-  "workflowId": "hello-world",
-  "status": "RUNNING"
-}
-```
+## Starting a Workflow
 
 ### Programmatically
 
-Inject `WorkflowEngine` and start the workflow:
+Inject `WorkflowEngine` and call `startWorkflow`:
 
 ```java
+import org.fireflyframework.workflow.core.WorkflowEngine;
+
 @Service
-@RequiredArgsConstructor
-public class GreetingService {
+public class OrderService {
 
     private final WorkflowEngine workflowEngine;
 
-    public Mono<WorkflowInstance> greet(String name) {
+    public OrderService(WorkflowEngine workflowEngine) {
+        this.workflowEngine = workflowEngine;
+    }
+
+    public Mono<String> placeOrder(String orderId, BigDecimal amount) {
         return workflowEngine.startWorkflow(
-            "hello-world",
-            Map.of("name", name)
-        );
+                "order-processing",
+                Map.of("orderId", orderId, "amount", amount)
+        ).map(instance -> instance.instanceId());
     }
 }
 ```
 
-## Step 4: Check Workflow Status
+**`startWorkflow` overloads:**
 
-```bash
-curl http://localhost:8080/api/workflows/hello-world/instances/{instanceId}/status
+| Signature | Description |
+|-----------|-------------|
+| `startWorkflow(workflowId, input)` | Basic start, trigger source defaults to `"api"` |
+| `startWorkflow(workflowId, input, correlationId, triggeredBy)` | With correlation ID and trigger source |
+| `startWorkflow(workflowId, input, correlationId, triggeredBy, dryRun)` | Full options with dry-run mode |
+
+### Via REST API
+
+```
+POST /api/v1/workflows/order-processing/start
+Content-Type: application/json
+
+{
+  "input": {
+    "orderId": "ORD-123",
+    "amount": 99.99
+  },
+  "correlationId": "REQ-456",
+  "waitForCompletion": false,
+  "waitTimeoutMs": 30000,
+  "dryRun": false
+}
 ```
 
-Response:
+Response (201 Created):
+
 ```json
 {
-  "instanceId": "550e8400-e29b-41d4-a716-446655440000",
-  "workflowId": "hello-world",
-  "status": "COMPLETED",
-  "progress": 100,
-  "stepExecutions": [
-    {"stepId": "greet", "status": "COMPLETED"},
-    {"stepId": "log-result", "status": "COMPLETED"}
-  ]
+  "instanceId": "a1b2c3d4-...",
+  "workflowId": "order-processing",
+  "status": "RUNNING",
+  "currentStepId": "validate",
+  "completedSteps": 0,
+  "totalSteps": 3,
+  "createdAt": "2026-02-20T10:00:00Z"
 }
 ```
 
-## Step 5: Add Conditional Steps
+## Monitoring a Workflow
 
-Use SpEL expressions to conditionally execute steps:
+### Check Status
+
+```java
+workflowEngine.getStatus("order-processing", instanceId)
+    .subscribe(instance -> {
+        System.out.println("Status: " + instance.status());
+        System.out.println("Current step: " + instance.currentStepId());
+    });
+```
+
+### Collect Result
+
+```java
+workflowEngine.collectResult("order-processing", instanceId, Map.class)
+    .subscribe(result -> System.out.println("Result: " + result));
+```
+
+`collectResult` returns `Mono.error(IllegalStateException)` if the workflow is not in a terminal state, failed, or was cancelled.
+
+### REST API
+
+```
+GET /api/v1/workflows/order-processing/instances/{instanceId}/status
+GET /api/v1/workflows/order-processing/instances/{instanceId}/collect
+```
+
+## Programmatic Workflow Definitions
+
+For dynamic or configuration-driven workflows, use `WorkflowDefinition.builder()`:
+
+```java
+import org.fireflyframework.workflow.model.*;
+import java.time.Duration;
+
+WorkflowDefinition workflow = WorkflowDefinition.builder()
+    .workflowId("dynamic-pipeline")
+    .name("Dynamic Pipeline")
+    .version("1.0.0")
+    .triggerMode(TriggerMode.SYNC)
+    .timeout(Duration.ofMinutes(30))
+    .retryPolicy(new RetryPolicy(3, Duration.ofSeconds(1), Duration.ofMinutes(5), 2.0))
+    .addStep(WorkflowStepDefinition.builder()
+        .stepId("step-1")
+        .name("First Step")
+        .order(1)
+        .handlerBeanName("firstStepHandler")
+        .timeout(Duration.ofMinutes(5))
+        .build())
+    .addStep(WorkflowStepDefinition.builder()
+        .stepId("step-2a")
+        .name("Parallel Step A")
+        .order(2)
+        .dependsOn("step-1")
+        .handlerBeanName("parallelStepAHandler")
+        .async(true)
+        .build())
+    .addStep(WorkflowStepDefinition.builder()
+        .stepId("step-2b")
+        .name("Parallel Step B")
+        .order(2)
+        .dependsOn("step-1")
+        .handlerBeanName("parallelStepBHandler")
+        .async(true)
+        .build())
+    .addStep(WorkflowStepDefinition.builder()
+        .stepId("step-3")
+        .name("Join Step")
+        .order(3)
+        .dependsOn("step-2a", "step-2b")
+        .handlerBeanName("joinStepHandler")
+        .build())
+    .build();
+
+workflowEngine.registerWorkflow(workflow);
+```
+
+## Step Dependencies and DAG Execution
+
+When steps declare `dependsOn`, the `WorkflowTopology` class builds a DAG and computes execution layers using Kahn's algorithm for topological sorting:
+
+```
+Layer 0: [step-1]            -- no dependencies, executes first
+Layer 1: [step-2a, step-2b]  -- both depend on step-1, execute in parallel
+Layer 2: [step-3]            -- depends on step-2a AND step-2b
+```
+
+Steps within the same layer can execute concurrently when marked `async = true`. The topology is validated at registration time to detect missing dependency references and circular dependencies.
+
+If no steps use `dependsOn`, the engine falls back to order-based sequential execution for backward compatibility.
+
+## SpEL Conditions on Steps
+
+Steps can define a `condition` attribute with a SpEL expression. The step executes only when the expression evaluates to `true`. If it evaluates to `false`, the step is skipped.
 
 ```java
 @WorkflowStep(
-    id = "premium-processing",
-    name = "Premium Processing",
-    dependsOn = {"validate"},                  // Explicit dependency
-    condition = "#input['tier'] == 'premium'"
+    id = "send-premium-notification",
+    name = "Send Premium Notification",
+    order = 3,
+    condition = "#ctx.getInput('customerType') == 'premium'"
 )
-public Mono<Map<String, Object>> premiumProcessing(WorkflowContext ctx) {
-    // Only executes if input.tier == 'premium'
-    return Mono.just(Map.of("premiumApplied", true));
+public Mono<Void> sendPremiumNotification(WorkflowContext ctx) {
+    return notificationService.sendPremium(ctx.getInput("customerId", String.class));
 }
 ```
 
-SpEL variables available:
-- `#ctx` - The WorkflowContext object
-- `#input` - Map of workflow input values
-- `#data` - Map of shared context data
+**Available SpEL variables:**
 
-## Step 6: Add Parallel Steps
+| Variable | Type | Description |
+|----------|------|-------------|
+| `#ctx` | `WorkflowContext` | The full context object |
+| `#input` | `Map<String, Object>` | The workflow input map |
+| `#data` | `Map<String, Object>` | The shared context data map |
 
-Use `dependsOn` with `async = true` to execute steps in parallel. Steps in the same execution layer run concurrently:
+## Step Trigger Modes
 
-```java
-// Layer 0: Both steps have no dependencies, execute in parallel
-@WorkflowStep(id = "fetch-user", async = true)
-public Mono<User> fetchUser(WorkflowContext ctx) {
-    return userService.findById(ctx.getInput("userId", String.class));
-}
+Each step has a `triggerMode` that controls how it can be invoked:
 
-@WorkflowStep(id = "fetch-products", async = true)
-public Mono<List<Product>> fetchProducts(WorkflowContext ctx) {
-    return productService.findAll();
-}
-
-// Layer 1: Depends on both parallel steps
-@WorkflowStep(id = "combine", dependsOn = {"fetch-user", "fetch-products"})
-public Mono<Order> combine(WorkflowContext ctx) {
-    User user = ctx.getStepOutput("fetch-user", User.class);
-    List<Product> products = ctx.getStepOutput("fetch-products", List.class);
-    return Mono.just(new Order(user, products));
-}
-```
-
-## Step 7: Add Retry Logic
-
-Configure automatic retries for steps that may fail:
+| Mode | Description |
+|------|-------------|
+| `EVENT` | Triggered by events matching `inputEventType` |
+| `PROGRAMMATIC` | Triggered via API or `WorkflowEngine.triggerStep()` |
+| `BOTH` | Supports both patterns (default) |
 
 ```java
 @WorkflowStep(
-    id = "call-external-api",
-    name = "Call External API",
-    maxRetries = 3,
-    retryDelayMs = 1000  // 1 second between retries
+    id = "wait-for-payment",
+    name = "Wait for Payment",
+    triggerMode = StepTriggerMode.EVENT,
+    inputEventType = "payment.completed",
+    outputEventType = "order.payment-received"
 )
-public Mono<Map<String, Object>> callExternalApi(WorkflowContext ctx) {
-    return externalApiClient.call()
-        .map(response -> Map.of("data", response));
+public Mono<PaymentResult> handlePayment(WorkflowContext ctx) {
+    return Mono.just(ctx.getInput("paymentData", PaymentResult.class));
 }
 ```
 
-## Step 8: Using WorkflowContext
+When `outputEventType` is specified, the engine publishes an event with that type after the step completes, enabling downstream steps or external systems to react.
 
-The `WorkflowContext` provides access to all workflow data:
+## Using WorkflowContext
+
+The `WorkflowContext` is passed to every step method and provides access to all workflow data:
 
 ```java
 @WorkflowStep(id = "process", dependsOn = {"validate"})
@@ -379,162 +420,79 @@ public Mono<Map<String, Object>> process(WorkflowContext ctx) {
     String instanceId = ctx.getInstanceId();
     String workflowId = ctx.getWorkflowId();
     String correlationId = ctx.getCorrelationId();
+    boolean isDryRun = ctx.isDryRun();
 
-    // Get typed input
+    // Typed input access
     String orderId = ctx.getInput("orderId", String.class);
     Double amount = ctx.getInput("amount", Double.class);
 
-    // Get output from previous step
+    // All inputs
+    Map<String, Object> allInputs = ctx.getAllInputs();
+
+    // Output from a previous step
     Map<String, Object> prevOutput = ctx.getStepOutput("validate", Map.class);
 
-    // Set shared context data for subsequent steps
-    ctx.set("processedAt", Instant.now());
-
-    // Get shared context data
-    Instant timestamp = ctx.get("processedAt", Instant.class);
-    String defaultVal = ctx.getOrDefault("missing", "default");
+    // Shared context (read/write between steps)
+    ctx.set("processedAt", Instant.now().toString());
+    String timestamp = ctx.get("processedAt", String.class);
+    String defaultVal = ctx.getOrDefault("missing", "fallback");
+    boolean hasKey = ctx.has("processedAt");
+    ctx.remove("tempKey");
 
     return Mono.just(Map.of("processed", true));
 }
 ```
 
-## Step 9: Lifecycle Hooks
+## Lifecycle Callbacks
 
-Add hooks to respond to workflow events:
+Add callbacks to respond to workflow and step lifecycle events:
 
 ```java
 @Workflow(id = "my-workflow")
 public class MyWorkflow {
 
+    // Called after each step completes (all steps, or filter by stepIds)
     @OnStepComplete
     public void onStepComplete(WorkflowContext ctx, StepExecution step) {
-        log.info("Step {} completed with status {}",
-            step.stepId(), step.status());
+        System.out.println("Step " + step.stepId() + " completed");
     }
 
+    // Called when the workflow completes successfully
     @OnWorkflowComplete
-    public void onWorkflowComplete(WorkflowContext ctx) {
-        log.info("Workflow {} completed successfully", ctx.getInstanceId());
+    public void onComplete(WorkflowContext ctx, WorkflowInstance instance) {
+        System.out.println("Workflow " + instance.instanceId() + " completed");
     }
 
-    @OnWorkflowError
-    public void onWorkflowError(WorkflowContext ctx, Throwable error) {
-        log.error("Workflow {} failed: {}",
-            ctx.getInstanceId(), error.getMessage());
+    // Called when the workflow fails (can filter by errorTypes and stepIds)
+    @OnWorkflowError(suppressError = false)
+    public void onError(WorkflowContext ctx, WorkflowInstance instance, Throwable error) {
+        System.err.println("Workflow failed: " + error.getMessage());
     }
 }
 ```
 
-## Basic Configuration
-
-Add to your `application.yml`:
-
-```yaml
-firefly:
-  workflow:
-    enabled: true
-    default-timeout: PT1H        # 1 hour workflow timeout
-    default-step-timeout: PT5M   # 5 minute step timeout
-    metrics-enabled: true
-    health-enabled: true
-
-    state:
-      enabled: true
-      default-ttl: P7D           # Keep state for 7 days
-
-    events:
-      enabled: true
-      publish-step-events: true
-
-    api:
-      enabled: true
-      base-path: /api/workflows
-```
+`@OnStepComplete` supports filtering by `stepIds` to only receive callbacks for specific steps. `@OnWorkflowError` supports filtering by `errorTypes` and `stepIds`, and can optionally suppress errors with `suppressError = true`.
 
 ## Enabling Durable Execution
 
-The durable execution engine adds Temporal.io-like capabilities including signals, timers, child workflows, compensation, and deterministic replay. This section covers the minimal setup required.
-
-### Prerequisites
-
-- `fireflyframework-eventsourcing` dependency
-- PostgreSQL database with R2DBC
-- Flyway for schema migrations
-
-Add the eventsourcing dependency to your `pom.xml`:
-
-```xml
-<dependency>
-    <groupId>org.fireflyframework</groupId>
-    <artifactId>fireflyframework-eventsourcing</artifactId>
-    <version>26.02.06</version>
-</dependency>
-```
-
-### Minimal Configuration
+For workflows requiring guaranteed completion, crash recovery from an event log, or advanced features like signals, timers, and child workflows, enable durable execution:
 
 ```yaml
 firefly:
   workflow:
     eventsourcing:
       enabled: true
-    signals:
-      enabled: true
-    timers:
-      enabled: true
-  eventsourcing:
-    enabled: true
-    store:
-      type: r2dbc
-
-spring:
-  r2dbc:
-    url: r2dbc:postgresql://localhost:5432/workflow_db
-    username: user
-    password: pass
-  flyway:
-    enabled: true
-    url: jdbc:postgresql://localhost:5432/workflow_db
-    user: user
-    password: pass
 ```
 
-### Signal Example
+This requires an `EventStore` bean from `fireflyframework-eventsourcing`. When enabled, `EventSourcedWorkflowStateStore` is created with `@Primary`, taking precedence over `CacheWorkflowStateStore`.
 
-Signals allow external systems to send data to a running workflow. Use `@WaitForSignal` to pause a step until a named signal arrives:
-
-```java
-@Workflow(id = "approval-workflow")
-public class ApprovalWorkflow {
-
-    @WorkflowStep(id = "wait-for-approval")
-    @WaitForSignal(name = "approval", timeoutMs = 86400000) // 24h timeout
-    public StepResult waitForApproval(WorkflowContext ctx) {
-        SignalResult signal = ctx.consumeSignal("approval");
-        if (signal != null && "approved".equals(signal.getPayload())) {
-            return StepResult.success("Approved");
-        }
-        return StepResult.failure("Rejected or timed out");
-    }
-}
-```
-
-### Timer Example
-
-Durable timers survive process restarts and are persisted as domain events:
-
-```java
-@WorkflowStep(id = "scheduled-check")
-@WaitForTimer(duration = "PT1H") // Wait 1 hour
-public StepResult scheduledCheck(WorkflowContext ctx) {
-    // Executes after timer fires
-    return StepResult.success("Check completed");
-}
-```
+For the complete guide, see [Durable Execution](durable-execution.md).
 
 ## Next Steps
 
-- [Architecture Overview](architecture.md) - Understand the system design
-- [Advanced Features](advanced-features.md) - Resilience4j, choreography, and more
-- [Configuration Reference](configuration.md) - All configuration options
-- [API Reference](api-reference.md) - REST and Java API documentation
+- [Architecture](architecture.md) -- Internal components and execution model
+- [Configuration](configuration.md) -- Complete property reference with defaults
+- [API Reference](api-reference.md) -- REST endpoints and Java API
+- [Advanced Features](advanced-features.md) -- Resilience, scheduling, DLQ, dry-run
+- [Durable Execution](durable-execution.md) -- Signals, timers, child workflows, compensation
+- [Testing](testing.md) -- Unit and integration testing strategies
