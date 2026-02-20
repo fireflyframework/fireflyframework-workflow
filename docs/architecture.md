@@ -284,6 +284,9 @@ A record representing the execution of a single step:
 | `workflowEventListener` | `WorkflowEventListener` | `events.listen-enabled=true` (default: true) |
 | `workflowAspect` | `WorkflowAspect` | Always |
 | `workflowService` | `WorkflowService` | Always |
+| `workflowProjectionRepository` | `WorkflowProjectionRepository` | Requires `EventStore` + `DatabaseClient`, `eventsourcing.enabled=true` |
+| `workflowInstanceProjection` | `WorkflowInstanceProjection` | Requires `EventStore` + `DatabaseClient`, `eventsourcing.enabled=true` |
+| `workflowProjectionScheduler` | `WorkflowProjectionScheduler` | Requires `WorkflowInstanceProjection`, auto-started |
 | `eventSourcedWorkflowStateStore` | `EventSourcedWorkflowStateStore` | `@Primary`, requires `EventStore`, `eventsourcing.enabled=true` |
 | `signalService` | `SignalService` | Requires `EventSourcedWorkflowStateStore`, `signals.enabled=true` |
 | `workflowQueryService` | `WorkflowQueryService` | Requires `EventSourcedWorkflowStateStore` |

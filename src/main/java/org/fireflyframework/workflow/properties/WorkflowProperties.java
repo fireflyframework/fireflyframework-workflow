@@ -599,6 +599,18 @@ public class WorkflowProperties {
          */
         @Min(100)
         private int maxEventsBeforeContinueAsNew = 1000;
+
+        /**
+         * How often the projection scheduler polls the event store for new events.
+         */
+        @NotNull
+        private Duration projectionPollInterval = Duration.ofSeconds(1);
+
+        /**
+         * Maximum number of events to process per projection poll cycle.
+         */
+        @Min(1)
+        private int projectionBatchSize = 100;
     }
 
     /**

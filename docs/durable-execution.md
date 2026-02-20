@@ -649,38 +649,51 @@ The `updateStatus()` method loads the aggregate, validates the expected status, 
 
 ---
 
+## Read-Side Projection
+
+The `EventSourcedWorkflowStateStore` supports query, count, and delete operations through a read-side projection that maintains a denormalized `workflow_instances_projection` PostgreSQL table.
+
+### Architecture
+
+The projection is fed by polling the event store's global stream:
+
+```
+EventStore --poll--> WorkflowProjectionScheduler --> WorkflowInstanceProjection --> workflow_instances_projection table
+                                                                                          |
+                                                                                          v
+EventSourcedWorkflowStateStore <--query-- WorkflowProjectionRepository
+```
+
+- **WorkflowProjectionScheduler** polls the event store on a configurable interval (default: 1s)
+- **WorkflowInstanceProjection** processes events and updates the projection table
+- **WorkflowProjectionRepository** queries the projection table for instance IDs
+- Query methods load the full aggregate from the event store and convert to `WorkflowInstance`
+- Count methods use direct SQL COUNT against the projection table
+- Delete methods soft-delete by setting `deleted = TRUE` in the projection
+
+### Configuration
+
+```yaml
+firefly:
+  workflow:
+    eventsourcing:
+      projection-poll-interval: 1s   # How often to poll for new events
+      projection-batch-size: 100      # Max events per poll cycle
+```
+
+### Eventual Consistency
+
+The projection is **eventually consistent** -- there is a small delay (up to the poll interval) between an event being saved and the projection being updated. The `findById()` method is always strongly consistent since it loads directly from the event store.
+
+### Graceful Degradation
+
+When `DatabaseClient` is not available (e.g., no R2DBC dependency), the projection beans are not created and all query/count methods return empty/zero. This preserves backward compatibility.
+
 ## Known Limitations
 
-The following limitations exist in the current implementation of `EventSourcedWorkflowStateStore`:
+### Delete Operations Are Soft-Delete
 
-### Query Methods Return Empty
-
-These methods require read-side projections that are not yet built and return empty results:
-
-| Method | Returns |
-|--------|---------|
-| `findByWorkflowId(workflowId)` | `Flux.empty()` |
-| `findByStatus(status)` | `Flux.empty()` |
-| `findByWorkflowIdAndStatus(workflowId, status)` | `Flux.empty()` |
-| `findByCorrelationId(correlationId)` | `Flux.empty()` |
-| `findActiveInstances()` | `Flux.empty()` |
-| `findStaleInstances(maxAge)` | `Flux.empty()` |
-
-### Delete Operations Are No-Ops
-
-Event-sourced data is immutable:
-
-| Method | Returns |
-|--------|---------|
-| `delete(instanceId)` | `Mono.just(false)` |
-| `deleteByWorkflowId(workflowId)` | `Mono.just(0L)` |
-
-### Count Operations Return Zero
-
-| Method | Returns |
-|--------|---------|
-| `countByWorkflowId(workflowId)` | `Mono.just(0L)` |
-| `countByWorkflowIdAndStatus(workflowId, status)` | `Mono.just(0L)` |
+The `delete()` and `deleteByWorkflowId()` methods soft-delete rows in the projection table (setting `deleted = TRUE`). The underlying event stream is preserved -- events are immutable.
 
 ### Save Operations Are Pass-Through
 

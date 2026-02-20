@@ -20,12 +20,13 @@ import org.fireflyframework.eventsourcing.domain.Event;
 import org.fireflyframework.eventsourcing.domain.EventStream;
 import org.fireflyframework.eventsourcing.store.EventStore;
 import org.fireflyframework.workflow.eventsourcing.aggregate.WorkflowAggregate;
+import org.fireflyframework.workflow.eventsourcing.projection.WorkflowProjectionRepository;
 import org.fireflyframework.workflow.model.StepExecution;
 import org.fireflyframework.workflow.model.WorkflowInstance;
 import org.fireflyframework.workflow.model.WorkflowStatus;
 import org.fireflyframework.workflow.state.WorkflowStateStore;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.lang.Nullable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -47,22 +48,41 @@ import java.util.UUID;
  * Key design decisions:
  * <ul>
  *   <li>State is derived from event history, not stored directly</li>
- *   <li>Query methods return empty results (will be implemented via projections later)</li>
- *   <li>Delete operations return false (event-sourced data is immutable)</li>
- *   <li>Count operations return 0 (projection-dependent)</li>
+ *   <li>Query/count methods delegate to a read-side projection when available</li>
+ *   <li>When no projection is configured, query methods return empty and counts return 0</li>
+ *   <li>Delete operations soft-delete from the projection table</li>
  * </ul>
  *
  * @see WorkflowStateStore
  * @see WorkflowAggregate
  * @see EventStore
+ * @see WorkflowProjectionRepository
  */
 @Slf4j
-@RequiredArgsConstructor
 public class EventSourcedWorkflowStateStore implements WorkflowStateStore {
 
     private static final String AGGREGATE_TYPE = "workflow";
 
     private final EventStore eventStore;
+    @Nullable
+    private final WorkflowProjectionRepository projectionRepository;
+
+    /**
+     * Creates a store without projection support. Query, count, and delete methods
+     * will return empty/zero/false.
+     */
+    public EventSourcedWorkflowStateStore(EventStore eventStore) {
+        this(eventStore, null);
+    }
+
+    /**
+     * Creates a store with optional projection support.
+     */
+    public EventSourcedWorkflowStateStore(EventStore eventStore,
+                                          @Nullable WorkflowProjectionRepository projectionRepository) {
+        this.eventStore = eventStore;
+        this.projectionRepository = projectionRepository;
+    }
 
     // ========================================================================
     // Aggregate Operations (new, not in interface)
@@ -239,105 +259,93 @@ public class EventSourcedWorkflowStateStore implements WorkflowStateStore {
     }
 
     // ========================================================================
-    // WorkflowStateStore Interface — Query Operations (projection-dependent)
+    // WorkflowStateStore Interface — Query Operations (projection-backed)
     // ========================================================================
 
-    /**
-     * Returns empty. Will be implemented via projections in a future task.
-     */
     @Override
     public Flux<WorkflowInstance> findByWorkflowId(String workflowId) {
-        log.debug("findByWorkflowId not yet implemented for event-sourced store (requires projections)");
-        return Flux.empty();
+        if (projectionRepository == null) return Flux.empty();
+        return projectionRepository.findInstanceIdsByWorkflowId(workflowId)
+                .flatMap(this::loadAggregate)
+                .map(this::toWorkflowInstance);
     }
 
-    /**
-     * Returns empty. Will be implemented via projections in a future task.
-     */
     @Override
     public Flux<WorkflowInstance> findByStatus(WorkflowStatus status) {
-        log.debug("findByStatus not yet implemented for event-sourced store (requires projections)");
-        return Flux.empty();
+        if (projectionRepository == null) return Flux.empty();
+        return projectionRepository.findInstanceIdsByStatus(status.name())
+                .flatMap(this::loadAggregate)
+                .map(this::toWorkflowInstance);
     }
 
-    /**
-     * Returns empty. Will be implemented via projections in a future task.
-     */
     @Override
     public Flux<WorkflowInstance> findByWorkflowIdAndStatus(String workflowId, WorkflowStatus status) {
-        log.debug("findByWorkflowIdAndStatus not yet implemented for event-sourced store (requires projections)");
-        return Flux.empty();
+        if (projectionRepository == null) return Flux.empty();
+        return projectionRepository.findInstanceIdsByWorkflowIdAndStatus(workflowId, status.name())
+                .flatMap(this::loadAggregate)
+                .map(this::toWorkflowInstance);
     }
 
-    /**
-     * Returns empty. Will be implemented via projections in a future task.
-     */
     @Override
     public Flux<WorkflowInstance> findByCorrelationId(String correlationId) {
-        log.debug("findByCorrelationId not yet implemented for event-sourced store (requires projections)");
-        return Flux.empty();
+        if (projectionRepository == null) return Flux.empty();
+        return projectionRepository.findInstanceIdsByCorrelationId(correlationId)
+                .flatMap(this::loadAggregate)
+                .map(this::toWorkflowInstance);
     }
 
-    /**
-     * Returns empty. Will be implemented via projections in a future task.
-     */
     @Override
     public Flux<WorkflowInstance> findActiveInstances() {
-        log.debug("findActiveInstances not yet implemented for event-sourced store (requires projections)");
-        return Flux.empty();
+        if (projectionRepository == null) return Flux.empty();
+        return projectionRepository.findActiveInstanceIds()
+                .flatMap(this::loadAggregate)
+                .map(this::toWorkflowInstance);
     }
 
-    /**
-     * Returns empty. Will be implemented via projections in a future task.
-     */
     @Override
     public Flux<WorkflowInstance> findStaleInstances(Duration maxAge) {
-        log.debug("findStaleInstances not yet implemented for event-sourced store (requires projections)");
-        return Flux.empty();
+        if (projectionRepository == null) return Flux.empty();
+        return projectionRepository.findStaleInstanceIds(maxAge)
+                .flatMap(this::loadAggregate)
+                .map(this::toWorkflowInstance);
     }
 
     // ========================================================================
-    // WorkflowStateStore Interface — Delete Operations (immutable events)
+    // WorkflowStateStore Interface — Delete Operations (soft-delete via projection)
     // ========================================================================
 
-    /**
-     * Returns false. Event-sourced data is immutable and cannot be deleted.
-     */
     @Override
     public Mono<Boolean> delete(String instanceId) {
-        log.debug("Delete not supported for event-sourced store (events are immutable)");
-        return Mono.just(false);
+        if (projectionRepository == null) return Mono.just(false);
+        try {
+            UUID aggregateId = UUID.fromString(instanceId);
+            return projectionRepository.softDelete(aggregateId);
+        } catch (IllegalArgumentException e) {
+            log.warn("Invalid instance ID format for delete: {}", instanceId);
+            return Mono.just(false);
+        }
     }
 
-    /**
-     * Returns 0L. Event-sourced data is immutable and cannot be deleted.
-     */
     @Override
     public Mono<Long> deleteByWorkflowId(String workflowId) {
-        log.debug("DeleteByWorkflowId not supported for event-sourced store (events are immutable)");
-        return Mono.just(0L);
+        if (projectionRepository == null) return Mono.just(0L);
+        return projectionRepository.softDeleteByWorkflowId(workflowId);
     }
 
     // ========================================================================
-    // WorkflowStateStore Interface — Count Operations (projection-dependent)
+    // WorkflowStateStore Interface — Count Operations (projection-backed)
     // ========================================================================
 
-    /**
-     * Returns 0L. Will be implemented via projections in a future task.
-     */
     @Override
     public Mono<Long> countByWorkflowId(String workflowId) {
-        log.debug("countByWorkflowId not yet implemented for event-sourced store (requires projections)");
-        return Mono.just(0L);
+        if (projectionRepository == null) return Mono.just(0L);
+        return projectionRepository.countByWorkflowId(workflowId);
     }
 
-    /**
-     * Returns 0L. Will be implemented via projections in a future task.
-     */
     @Override
     public Mono<Long> countByWorkflowIdAndStatus(String workflowId, WorkflowStatus status) {
-        log.debug("countByWorkflowIdAndStatus not yet implemented for event-sourced store (requires projections)");
-        return Mono.just(0L);
+        if (projectionRepository == null) return Mono.just(0L);
+        return projectionRepository.countByWorkflowIdAndStatus(workflowId, status.name());
     }
 
     // ========================================================================

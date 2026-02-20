@@ -29,6 +29,9 @@ import org.fireflyframework.workflow.core.WorkflowExecutor;
 import org.fireflyframework.workflow.core.WorkflowRegistry;
 import org.fireflyframework.workflow.event.WorkflowEventListener;
 import org.fireflyframework.workflow.event.WorkflowEventPublisher;
+import org.fireflyframework.workflow.eventsourcing.projection.WorkflowInstanceProjection;
+import org.fireflyframework.workflow.eventsourcing.projection.WorkflowProjectionRepository;
+import org.fireflyframework.workflow.eventsourcing.projection.WorkflowProjectionScheduler;
 import org.fireflyframework.workflow.eventsourcing.store.EventSourcedWorkflowStateStore;
 import org.fireflyframework.workflow.health.WorkflowEngineHealthIndicator;
 import org.fireflyframework.workflow.properties.WorkflowProperties;
@@ -52,7 +55,9 @@ import org.fireflyframework.workflow.state.WorkflowStateStore;
 import org.fireflyframework.workflow.timer.TimerSchedulerService;
 import org.fireflyframework.workflow.timer.WorkflowTimerProjection;
 import org.fireflyframework.workflow.tracing.WorkflowTracer;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.lang.Nullable;
+import org.springframework.r2dbc.core.DatabaseClient;
 
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
@@ -194,13 +199,56 @@ public class WorkflowEngineAutoConfiguration {
     // ==================== Durable Execution Beans ====================
 
     @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean({EventStore.class, DatabaseClient.class})
+    @ConditionalOnProperty(prefix = "firefly.workflow.eventsourcing", name = "enabled", havingValue = "true")
+    public WorkflowProjectionRepository workflowProjectionRepository(DatabaseClient databaseClient) {
+        log.info("Creating WorkflowProjectionRepository for read-side projection queries");
+        return new WorkflowProjectionRepository(databaseClient);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean({EventStore.class, DatabaseClient.class})
+    @ConditionalOnProperty(prefix = "firefly.workflow.eventsourcing", name = "enabled", havingValue = "true")
+    public WorkflowInstanceProjection workflowInstanceProjection(
+            DatabaseClient databaseClient,
+            EventStore eventStore,
+            MeterRegistry meterRegistry) {
+        log.info("Creating WorkflowInstanceProjection for read-side event processing");
+        return new WorkflowInstanceProjection(databaseClient, eventStore, meterRegistry);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(WorkflowInstanceProjection.class)
+    public WorkflowProjectionScheduler workflowProjectionScheduler(
+            WorkflowInstanceProjection projection,
+            EventStore eventStore,
+            WorkflowProperties properties) {
+        WorkflowProjectionScheduler scheduler = new WorkflowProjectionScheduler(
+                projection,
+                eventStore,
+                properties.getEventsourcing().getProjectionPollInterval(),
+                properties.getEventsourcing().getProjectionBatchSize());
+        scheduler.start();
+        log.info("Created and started WorkflowProjectionScheduler with pollInterval={}, batchSize={}",
+                properties.getEventsourcing().getProjectionPollInterval(),
+                properties.getEventsourcing().getProjectionBatchSize());
+        return scheduler;
+    }
+
+    @Bean
     @Primary
     @ConditionalOnMissingBean(EventSourcedWorkflowStateStore.class)
     @ConditionalOnBean(EventStore.class)
     @ConditionalOnProperty(prefix = "firefly.workflow.eventsourcing", name = "enabled", havingValue = "true")
-    public EventSourcedWorkflowStateStore eventSourcedWorkflowStateStore(EventStore eventStore) {
-        log.info("Creating EventSourcedWorkflowStateStore for durable execution");
-        return new EventSourcedWorkflowStateStore(eventStore);
+    public EventSourcedWorkflowStateStore eventSourcedWorkflowStateStore(
+            EventStore eventStore,
+            @Nullable WorkflowProjectionRepository projectionRepository) {
+        log.info("Creating EventSourcedWorkflowStateStore for durable execution (projection: {})",
+                projectionRepository != null);
+        return new EventSourcedWorkflowStateStore(eventStore, projectionRepository);
     }
 
     @Bean

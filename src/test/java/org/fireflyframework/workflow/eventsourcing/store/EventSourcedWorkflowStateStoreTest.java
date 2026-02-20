@@ -24,6 +24,7 @@ import org.fireflyframework.workflow.eventsourcing.aggregate.WorkflowAggregate;
 import org.fireflyframework.workflow.eventsourcing.event.WorkflowStartedEvent;
 import org.fireflyframework.workflow.eventsourcing.event.StepStartedEvent;
 import org.fireflyframework.workflow.eventsourcing.event.StepCompletedEvent;
+import org.fireflyframework.workflow.eventsourcing.projection.WorkflowProjectionRepository;
 import org.fireflyframework.workflow.model.StepExecution;
 import org.fireflyframework.workflow.model.StepStatus;
 import org.fireflyframework.workflow.model.WorkflowInstance;
@@ -657,12 +658,12 @@ class EventSourcedWorkflowStateStoreTest {
     }
 
     // ========================================================================
-    // Stub Method Tests
+    // Without Projection — returns empty/zero/false
     // ========================================================================
 
     @Nested
-    @DisplayName("Stub methods")
-    class StubMethodTests {
+    @DisplayName("Without projection (null repository)")
+    class WithoutProjectionTests {
 
         @Test
         @DisplayName("findByWorkflowId should return empty")
@@ -736,6 +737,126 @@ class EventSourcedWorkflowStateStoreTest {
             StepVerifier.create(store.countByWorkflowIdAndStatus("some-workflow", WorkflowStatus.COMPLETED))
                     .expectNext(0L)
                     .verifyComplete();
+        }
+    }
+
+    // ========================================================================
+    // With Projection — delegates to repository + loads aggregates
+    // ========================================================================
+
+    @Nested
+    @DisplayName("With projection (repository available)")
+    class WithProjectionTests {
+
+        @Mock
+        private WorkflowProjectionRepository projectionRepository;
+
+        private EventSourcedWorkflowStateStore storeWithProjection;
+
+        @BeforeEach
+        void setUpProjection() {
+            storeWithProjection = new EventSourcedWorkflowStateStore(eventStore, projectionRepository);
+        }
+
+        @Test
+        @DisplayName("findByWorkflowId should delegate to repository and load aggregates")
+        void findByWorkflowId_shouldDelegateToRepository() {
+            when(projectionRepository.findInstanceIdsByWorkflowId(WORKFLOW_ID))
+                    .thenReturn(reactor.core.publisher.Flux.just(AGGREGATE_ID));
+            EventStream eventStream = createStartedEventStream(AGGREGATE_ID);
+            when(eventStore.loadEventStream(AGGREGATE_ID, "workflow"))
+                    .thenReturn(Mono.just(eventStream));
+
+            StepVerifier.create(storeWithProjection.findByWorkflowId(WORKFLOW_ID))
+                    .assertNext(instance -> {
+                        assertThat(instance.instanceId()).isEqualTo(INSTANCE_ID);
+                        assertThat(instance.workflowId()).isEqualTo(WORKFLOW_ID);
+                    })
+                    .verifyComplete();
+
+            verify(projectionRepository).findInstanceIdsByWorkflowId(WORKFLOW_ID);
+            verify(eventStore).loadEventStream(AGGREGATE_ID, "workflow");
+        }
+
+        @Test
+        @DisplayName("findByStatus should delegate to repository")
+        void findByStatus_shouldDelegateToRepository() {
+            when(projectionRepository.findInstanceIdsByStatus("RUNNING"))
+                    .thenReturn(reactor.core.publisher.Flux.just(AGGREGATE_ID));
+            EventStream eventStream = createStartedEventStream(AGGREGATE_ID);
+            when(eventStore.loadEventStream(AGGREGATE_ID, "workflow"))
+                    .thenReturn(Mono.just(eventStream));
+
+            StepVerifier.create(storeWithProjection.findByStatus(WorkflowStatus.RUNNING))
+                    .assertNext(instance -> {
+                        assertThat(instance.status()).isEqualTo(WorkflowStatus.RUNNING);
+                    })
+                    .verifyComplete();
+
+            verify(projectionRepository).findInstanceIdsByStatus("RUNNING");
+        }
+
+        @Test
+        @DisplayName("countByWorkflowId should delegate to repository")
+        void countByWorkflowId_shouldDelegateToRepository() {
+            when(projectionRepository.countByWorkflowId(WORKFLOW_ID))
+                    .thenReturn(Mono.just(5L));
+
+            StepVerifier.create(storeWithProjection.countByWorkflowId(WORKFLOW_ID))
+                    .expectNext(5L)
+                    .verifyComplete();
+
+            verify(projectionRepository).countByWorkflowId(WORKFLOW_ID);
+            verifyNoInteractions(eventStore);
+        }
+
+        @Test
+        @DisplayName("countByWorkflowIdAndStatus should delegate to repository")
+        void countByWorkflowIdAndStatus_shouldDelegateToRepository() {
+            when(projectionRepository.countByWorkflowIdAndStatus(WORKFLOW_ID, "COMPLETED"))
+                    .thenReturn(Mono.just(3L));
+
+            StepVerifier.create(storeWithProjection.countByWorkflowIdAndStatus(WORKFLOW_ID, WorkflowStatus.COMPLETED))
+                    .expectNext(3L)
+                    .verifyComplete();
+
+            verify(projectionRepository).countByWorkflowIdAndStatus(WORKFLOW_ID, "COMPLETED");
+        }
+
+        @Test
+        @DisplayName("delete should soft-delete via repository")
+        void delete_shouldSoftDelete() {
+            when(projectionRepository.softDelete(AGGREGATE_ID))
+                    .thenReturn(Mono.just(true));
+
+            StepVerifier.create(storeWithProjection.delete(INSTANCE_ID))
+                    .expectNext(true)
+                    .verifyComplete();
+
+            verify(projectionRepository).softDelete(AGGREGATE_ID);
+        }
+
+        @Test
+        @DisplayName("deleteByWorkflowId should soft-delete via repository")
+        void deleteByWorkflowId_shouldSoftDelete() {
+            when(projectionRepository.softDeleteByWorkflowId(WORKFLOW_ID))
+                    .thenReturn(Mono.just(3L));
+
+            StepVerifier.create(storeWithProjection.deleteByWorkflowId(WORKFLOW_ID))
+                    .expectNext(3L)
+                    .verifyComplete();
+
+            verify(projectionRepository).softDeleteByWorkflowId(WORKFLOW_ID);
+        }
+
+        @Test
+        @DisplayName("delete with invalid UUID should return false")
+        void delete_withInvalidUuid_shouldReturnFalse() {
+            StepVerifier.create(storeWithProjection.delete("not-a-uuid"))
+                    .expectNext(false)
+                    .verifyComplete();
+
+            verifyNoInteractions(projectionRepository);
         }
     }
 
