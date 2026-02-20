@@ -38,6 +38,7 @@ Controls workflow event publishing via `fireflyframework-eda`.
 | `events.publish-step-events` | `boolean` | `true` | Whether to publish step-level events |
 | `events.include-context` | `boolean` | `false` | Whether to include workflow context in events |
 | `events.include-output` | `boolean` | `true` | Whether to include step output in events |
+| `events.listen-enabled` | `boolean` | `true` | Whether to enable the `WorkflowEventListener` bean |
 
 ## Retry (firefly.workflow.retry)
 
@@ -201,6 +202,24 @@ The workflow engine requires a `CacheAdapter` bean from `fireflyframework-cache`
 | `firefly.cache.redis.port` | `int` | `6379` | Redis port |
 | `firefly.cache.default-cache-type` | `String` | `"memory"` | Default cache type (`redis` or `memory`) |
 
+## EDA Configuration (fireflyframework-eda)
+
+Event publishing and event-driven triggering require `fireflyframework-eda` to be configured. The `WorkflowEventPublisher` bean is only created when an `EventPublisherFactory` bean is present, which requires EDA publisher configuration:
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `firefly.eda.enabled` | `boolean` | `true` | Enable the EDA module |
+| `firefly.eda.publishers.kafka.default.enabled` | `boolean` | `false` | Enable Kafka publisher |
+| `firefly.eda.publishers.kafka.default.bootstrap-servers` | `String` | -- | Kafka bootstrap servers |
+
+For the complete EDA configuration reference, see the `fireflyframework-eda` documentation. For workflow-specific EDA usage, see [EDA Integration](eda-integration.md).
+
+## Step State (firefly.workflow.step-state)
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `step-state.enabled` | `boolean` | `true` | Enable step-level state tracking (required for step-level event handling in `WorkflowEventListener` Phase 2) |
+
 ## Complete YAML Example
 
 ```yaml
@@ -213,6 +232,15 @@ firefly:
       host: localhost
       port: 6379
     default-cache-type: redis
+
+  # EDA configuration (required for event publishing and event-driven triggering)
+  eda:
+    enabled: true
+    publishers:
+      kafka:
+        default:
+          enabled: true
+          bootstrap-servers: localhost:9092
 
   # Workflow engine configuration
   workflow:
@@ -238,6 +266,7 @@ firefly:
       publish-step-events: true
       include-context: false
       include-output: true
+      listen-enabled: true
 
     retry:
       max-attempts: 3

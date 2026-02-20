@@ -138,7 +138,7 @@ public class OrderProcessingWorkflow {
 }
 ```
 
-Start the workflow programmatically or via REST API:
+Start the workflow programmatically, via REST API, or from an external event:
 
 ```java
 // Programmatic
@@ -150,39 +150,41 @@ workflowEngine.startWorkflow("order-processing", Map.of("orderId", "ORD-123"))
 // { "input": { "orderId": "ORD-123" } }
 ```
 
+Workflows can also be triggered by events from Kafka or RabbitMQ by setting `triggerEventType` on the `@Workflow` annotation. See [EDA Integration](docs/eda-integration.md) for the full guide.
+
 ## Architecture Overview
 
 ```
-                    ┌─────────────────────┐
+                    ┌──────────────────────┐
                     │  WorkflowController  │  REST API
-                    └──────────┬──────────┘
+                    └──────────┬───────────┘
                                │
-                    ┌──────────▼──────────┐
-                    │   WorkflowService    │  Service Layer
-                    └──────────┬──────────┘
+                    ┌──────────▼───────────┐
+                    │  WorkflowService     │  Service Layer
+                    └──────────┬───────────┘
                                │
-                    ┌──────────▼──────────┐
-                    │   WorkflowEngine     │  Orchestration Facade
-                    └──────────┬──────────┘
+                    ┌──────────▼───────────┐
+                    │  WorkflowEngine      │  Orchestration Facade
+                    └──────────┬───────────┘
                                │
               ┌────────────────┼────────────────┐
               │                │                │
-   ┌──────────▼───┐  ┌────────▼────────┐  ┌───▼──────────────┐
-   │  Workflow     │  │  Workflow       │  │  WorkflowEvent    │
-   │  Registry     │  │  Executor      │  │  Publisher        │
-   └──────────────┘  └────────┬────────┘  └──────────────────┘
-                              │
-                   ┌──────────▼──────────┐
-                   │  WorkflowTopology   │  DAG + Kahn's Algorithm
-                   └──────────┬──────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              │                               │
-   ┌──────────▼──────────┐      ┌─────────────▼──────────────┐
-   │ CacheWorkflow       │      │ EventSourcedWorkflow       │
-   │ StateStore           │      │ StateStore                  │
-   │ (default)            │      │ (durable, opt-in)           │
-   └──────────────────────┘      └────────────────────────────┘
+   ┌──────────▼───┐  ┌─────────▼───────┐  ┌─────▼────────────┐
+   │  Workflow    │  │  Workflow       │  │  WorkflowEvent   │
+   │  Registry    │  │  Executor       │  │  Publisher       │
+   └──────────────┘  └─────────┬───────┘  └──────────────────┘
+                               │
+                   ┌───────────▼──────────┐
+                   │  WorkflowTopology    │  DAG + Kahn's Algorithm
+                   └───────────┬──────────┘
+                               │
+              ┌────────────────┼───────────────┐
+              │                                │
+   ┌──────────▼──────────┐      ┌──────────────▼─────────────┐
+   │  CacheWorkflow      │      │  EventSourcedWorkflow      │
+   │  StateStore         │      │  StateStore                │
+   │  (default)          │      │  (durable, opt-in)         │
+   └─────────────────────┘      └────────────────────────────┘
    Uses: fireflyframework-cache   Uses: fireflyframework-eventsourcing
 ```
 
@@ -251,6 +253,7 @@ For the complete configuration reference, see [Configuration](docs/configuration
 
 - [Getting Started](docs/getting-started.md) -- Prerequisites, cache setup, first workflow, programmatic definitions
 - [Architecture](docs/architecture.md) -- Components, execution model, state management, auto-configuration
+- [EDA Integration](docs/eda-integration.md) -- Event-driven triggering, step choreography, lifecycle event publishing
 - [Configuration](docs/configuration.md) -- Complete property reference with defaults
 - [API Reference](docs/api-reference.md) -- REST endpoints, Java API, annotations
 - [Advanced Features](docs/advanced-features.md) -- DAG execution, resilience, scheduling, DLQ, dry-run

@@ -5,38 +5,38 @@ This document describes the architecture of the Firefly Workflow Engine: its com
 ## System Architecture
 
 ```
-                         ┌──────────────────────────┐
-                         │    WorkflowController     │  REST API Layer
-                         │    DeadLetterController   │
-                         └────────────┬─────────────┘
-                                      │
-                         ┌────────────▼─────────────┐
-                         │     WorkflowService       │  Service Layer (DTO mapping)
-                         └────────────┬─────────────┘
-                                      │
-                         ┌────────────▼─────────────┐
-                         │     WorkflowEngine        │  Orchestration Facade
-                         └────────────┬─────────────┘
-                                      │
-           ┌──────────────────────────┼──────────────────────────┐
-           │                          │                          │
-┌──────────▼──────────┐  ┌───────────▼───────────┐  ┌──────────▼──────────────┐
-│  WorkflowRegistry    │  │  WorkflowExecutor      │  │  WorkflowEventPublisher  │
-│  (definitions store) │  │  (step execution)      │  │  (via fireflyframework-  │
-└─────────────────────┘  └───────────┬───────────┘  │   eda)                   │
-                                     │               └─────────────────────────┘
-                          ┌──────────▼──────────┐
-                          │  WorkflowTopology    │  DAG / Kahn's Algorithm
-                          └──────────┬──────────┘
-                                     │
-              ┌──────────────────────┼──────────────────────┐
-              │                                             │
-┌─────────────▼───────────────┐          ┌─────────────────▼────────────────┐
-│  CacheWorkflowStateStore     │          │  EventSourcedWorkflowStateStore  │
-│  CacheStepStateStore         │          │  (opt-in, @Primary when enabled) │
-│  (default, requires          │          │  Uses: fireflyframework-         │
-│   CacheAdapter)              │          │   eventsourcing EventStore       │
-└──────────────────────────────┘          └──────────────────────────────────┘
+                        ┌────────────────────────────┐
+                        │  WorkflowController        │  REST API Layer
+                        │  DeadLetterController      │
+                        └──────────────┬─────────────┘
+                                       │
+                        ┌──────────────▼─────────────┐
+                        │  WorkflowService           │  Service Layer (DTO mapping)
+                        └──────────────┬─────────────┘
+                                       │
+                        ┌──────────────▼─────────────┐
+                        │  WorkflowEngine            │  Orchestration Facade
+                        └──────────────┬─────────────┘
+                                       │
+            ┌──────────────────────────┼─────────────────────────────┐
+            │                          │                             │
+┌───────────▼───────────┐ ┌────────────▼────────────┐ ┌──────────────▼──────────────┐
+│  WorkflowRegistry     │ │  WorkflowExecutor       │ │  WorkflowEventPublisher     │
+│  (definitions store)  │ │  (step execution)       │ │  (via fireflyframework-     │
+└───────────────────────┘ └────────────┬────────────┘ │   eda)                      │
+                                       │              └─────────────────────────────┘
+                           ┌───────────▼──────────┐
+                           │  WorkflowTopology    │  DAG / Kahn's Algorithm
+                           └───────────┬──────────┘
+                                       │
+                ┌──────────────────────┼─────────────────────┐
+                │                                            │
+┌───────────────▼──────────────┐          ┌──────────────────▼─────────────────┐
+│  CacheWorkflowStateStore     │          │  EventSourcedWorkflowStateStore    │
+│  CacheStepStateStore         │          │  (opt-in, @Primary when enabled)   │
+│  (default, requires          │          │  Uses: fireflyframework-           │
+│   CacheAdapter)              │          │   eventsourcing EventStore         │
+└──────────────────────────────┘          └────────────────────────────────────┘
 ```
 
 ## Core Components
@@ -124,15 +124,22 @@ Service layer between the REST controller and `WorkflowEngine`. Handles:
 
 ### WorkflowEventPublisher
 
-Publishes workflow lifecycle events using `fireflyframework-eda` `EventPublisherFactory`. Events are sent to the configured destination (`firefly.workflow.events.default-destination`, default: `"workflow-events"`).
+Publishes workflow lifecycle events using `fireflyframework-eda` `EventPublisherFactory`. Events are sent to the configured destination (`firefly.workflow.events.default-destination`, default: `"workflow-events"`). Published events include workflow lifecycle transitions (`workflow.started`, `workflow.completed`, `workflow.failed`, etc.) and step lifecycle transitions (`workflow.step.started`, `workflow.step.completed`, etc.). When a step has an `outputEventType`, the executor also publishes a custom event with the step's output as payload, enabling step choreography chains.
+
+Publishing failures are silently swallowed (`onErrorResume(e -> Mono.empty())`) to prevent broker outages from failing workflows. This bean is only created when `EventPublisherFactory` is available from `fireflyframework-eda`.
 
 ### WorkflowEventListener
 
-Listens for incoming events and:
+Receives inbound events from Kafka or RabbitMQ (bridged via Spring `@EventListener` on `EventEnvelope`) and processes them in four sequential phases:
 
-- Triggers workflows whose `triggerEventType` matches the event
-- Resumes steps whose `inputEventType` matches the event (step-level choreography)
-- Requires `StepStateStore` for step-level event handling
+1. **Resume WAITING workflows** -- matches by correlation ID or `_waitingForEvent` context key (glob pattern)
+2. **Resume waiting steps** -- calls `stepStateStore.findStepsWaitingForEvent(eventType)` (requires `StepStateStore`)
+3. **Trigger steps by input event** -- exact string match on `WorkflowStepDefinition.inputEventType()` across all registered workflows
+4. **Trigger workflows by trigger event** -- glob pattern match on `WorkflowDefinition.triggerEventType()`, filtered by `supportsAsyncTrigger()`
+
+All errors in the listener are swallowed to prevent bad events from crashing the listener. The bean is enabled by default (`events.listen-enabled=true`).
+
+For the complete EDA integration guide, see [EDA Integration](eda-integration.md).
 
 ## State Management
 
@@ -334,6 +341,7 @@ When durable execution is enabled, the `WorkflowAggregate` produces 22 domain ev
 ## Next Steps
 
 - [Getting Started](getting-started.md) -- Setup and first workflow
+- [EDA Integration](eda-integration.md) -- Event-driven triggering, step choreography, lifecycle events
 - [Configuration](configuration.md) -- Complete property reference
 - [API Reference](api-reference.md) -- REST and Java API
 - [Durable Execution](durable-execution.md) -- Event sourcing deep dive

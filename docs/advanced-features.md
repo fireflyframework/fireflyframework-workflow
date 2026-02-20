@@ -687,6 +687,7 @@ workflowEngine.registerWorkflow(definition);
 
 - [Getting Started](getting-started.md) -- Prerequisites, cache setup, first workflow
 - [Architecture](architecture.md) -- Internal components and execution model
+- [EDA Integration](eda-integration.md) -- Event-driven triggering, step choreography, lifecycle events
 - [Configuration](configuration.md) -- Complete property reference with defaults
 - [API Reference](api-reference.md) -- REST endpoints and Java API
 - [Durable Execution](durable-execution.md) -- Signals, timers, child workflows, compensation

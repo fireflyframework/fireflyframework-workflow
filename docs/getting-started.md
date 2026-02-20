@@ -491,6 +491,7 @@ For the complete guide, see [Durable Execution](durable-execution.md).
 ## Next Steps
 
 - [Architecture](architecture.md) -- Internal components and execution model
+- [EDA Integration](eda-integration.md) -- Event-driven triggering, step choreography, lifecycle events
 - [Configuration](configuration.md) -- Complete property reference with defaults
 - [API Reference](api-reference.md) -- REST endpoints and Java API
 - [Advanced Features](advanced-features.md) -- Resilience, scheduling, DLQ, dry-run
