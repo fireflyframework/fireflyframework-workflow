@@ -677,14 +677,14 @@ The project includes the following test classes:
 | `WorkflowEventTest` | Event publishing |
 | `WorkflowControllerTest` | REST controller endpoints |
 | `StepChoreographyTest` | Step-level choreography |
-| `WorkflowAggregateTest` | Aggregate lifecycle commands |
-| `WorkflowAggregateStepsTest` | Aggregate step operations |
+| `WorkflowAggregateTest` | Aggregate lifecycle commands, error tracking |
+| `WorkflowAggregateStepsTest` | Aggregate step operations, signal consumption, signal waiters, compensation state |
 | `WorkflowLifecycleEventsTest` | Lifecycle event classes |
 | `StepEventsTest` | Step event classes |
 | `AdvancedEventsTest` | Signal, timer, child workflow events |
-| `WorkflowSnapshotTest` | Snapshot creation and restoration |
+| `WorkflowSnapshotTest` | Snapshot creation, restoration, and round-trip for all fields |
 | `EventSourcedWorkflowStateStoreTest` | Event-sourced state store |
-| `SignalServiceTest` | Signal sending and consuming |
+| `SignalServiceTest` | Signal sending, consuming with persistence |
 | `WorkflowQueryServiceTest` | Query execution |
 | `SearchAttributeProjectionTest` | Search attribute projection |
 | `WorkflowSearchServiceTest` | Search by attributes |

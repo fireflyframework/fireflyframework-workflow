@@ -53,11 +53,18 @@ The `WorkflowAggregate` extends `AggregateRoot` from `fireflyframework-eventsour
 | `stepStates` | `Map<String, StepState>` | Per-step execution state |
 | `completedStepOrder` | `List<String>` | Steps completed in order |
 | `pendingSignals` | `Map<String, SignalData>` | Buffered signals |
+| `signalWaiters` | `Map<String, String>` | Signal name to waiting step ID |
 | `activeTimers` | `Map<String, TimerData>` | Active durable timers |
 | `childWorkflows` | `Map<String, ChildWorkflowRef>` | Child workflow references |
 | `sideEffects` | `Map<String, Object>` | Recorded side effect values |
 | `searchAttributes` | `Map<String, Object>` | Custom search attributes |
 | `lastHeartbeats` | `Map<String, Map<String, Object>>` | Last heartbeat per step |
+| `errorMessage` | `String` | Error message (when failed) |
+| `errorType` | `String` | Error type (when failed) |
+| `failedStepId` | `String` | Step that caused failure |
+| `compensating` | `boolean` | Whether compensation is in progress |
+| `compensationPolicy` | `String` | Active compensation policy |
+| `compensatedSteps` | `Map<String, CompensationStepResult>` | Completed compensation step results |
 
 ### Command Methods
 
@@ -75,6 +82,8 @@ The `WorkflowAggregate` extends `AggregateRoot` from `fireflyframework-eventsour
 | `skipStep(stepId, reason)` | `StepSkippedEvent` | Skip a step |
 | `retryStep(stepId, attemptNumber, delayMs)` | `StepRetriedEvent` | Retry a step |
 | `receiveSignal(signalName, payload)` | `SignalReceivedEvent` | Receive an external signal |
+| `consumeSignal(signalName, consumedByStepId)` | `SignalConsumedEvent` | Consume a buffered signal |
+| `registerSignalWaiter(signalName, waitingStepId)` | `SignalWaiterRegisteredEvent` | Register a step as a signal waiter |
 | `registerTimer(timerId, fireAt, data)` | `TimerRegisteredEvent` | Register a durable timer |
 | `fireTimer(timerId)` | `TimerFiredEvent` | Fire a registered timer |
 | `spawnChildWorkflow(childInstanceId, childWorkflowId, input, parentStepId)` | `ChildWorkflowSpawnedEvent` | Spawn a child workflow |
@@ -90,7 +99,7 @@ All commands that modify state require the workflow to be in a non-terminal stat
 
 ## Domain Events
 
-The durable execution engine uses 22 domain events that together capture the complete workflow lifecycle:
+The durable execution engine uses 24 domain events that together capture the complete workflow lifecycle:
 
 ### Workflow Lifecycle Events
 
@@ -118,6 +127,8 @@ The durable execution engine uses 22 domain events that together capture the com
 | Event | Description |
 |-------|-------------|
 | `SignalReceivedEvent` | External signal received and buffered |
+| `SignalConsumedEvent` | Buffered signal consumed by a step |
+| `SignalWaiterRegisteredEvent` | Step registered as waiting for a signal |
 
 ### Timer Events
 
@@ -225,6 +236,8 @@ firefly:
 ```
 
 ### Consuming Signals Programmatically
+
+Consuming a signal returns the buffered payload and persists a `SignalConsumedEvent` to the aggregate, removing it from the pending buffer:
 
 ```java
 Mono<Map<String, Object>> payload = signalService.consumeSignal(instanceId, "approval-received");
@@ -441,9 +454,9 @@ firefly:
 
 ### Compensation Flow
 
-1. `CompensationStartedEvent` is recorded with the failed step ID and policy
+1. `CompensationStartedEvent` is recorded with the failed step ID and policy. The aggregate enters the `compensating` state and records the `compensationPolicy`.
 2. Completed steps are compensated in reverse order
-3. Each successful compensation records a `CompensationStepCompletedEvent`
+3. Each successful compensation records a `CompensationStepCompletedEvent`, which is tracked in the aggregate's `compensatedSteps` map as a `CompensationStepResult` (containing `success` and optional `errorMessage`)
 4. After all compensations complete, a `WorkflowFailedEvent` is recorded
 
 The `StepHandler<T>` interface also supports compensation via the `compensate()` default method.
@@ -622,7 +635,7 @@ firefly:
       snapshot-threshold: 20
 ```
 
-A snapshot is taken every `snapshot-threshold` events. The `WorkflowSnapshot` class captures all aggregate state including step states, pending signals, active timers, child workflows, side effects, search attributes, heartbeats, and completed step order.
+A snapshot is taken every `snapshot-threshold` events. The `WorkflowSnapshot` class captures all aggregate state including step states, pending signals, signal waiters, active timers, child workflows, side effects, search attributes, heartbeats, completed step order, error tracking fields (`errorMessage`, `errorType`, `failedStepId`), and compensation state (`compensating`, `compensationPolicy`, `compensatedSteps`).
 
 Snapshots are restored via `WorkflowAggregate.restoreFromSnapshot()`, which directly sets all fields without replaying events.
 

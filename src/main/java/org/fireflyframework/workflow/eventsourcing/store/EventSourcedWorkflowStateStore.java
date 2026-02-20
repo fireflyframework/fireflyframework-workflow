@@ -370,11 +370,11 @@ public class EventSourcedWorkflowStateStore implements WorkflowStateStore {
                 aggregate.getInput() != null ? Map.copyOf(aggregate.getInput()) : Map.of(),
                 aggregate.getOutput(),
                 stepExecutions,
-                null, // errorMessage — not tracked at aggregate level in current events
-                null, // errorType — not tracked at aggregate level in current events
+                aggregate.getErrorMessage(),
+                aggregate.getErrorType(),
                 aggregate.getCorrelationId(),
                 aggregate.getTriggeredBy(),
-                null, // createdAt — not tracked separately from startedAt in aggregate
+                aggregate.getStartedAt(), // createdAt — same as startedAt in event-sourced model
                 aggregate.getStartedAt(),
                 aggregate.getCompletedAt()
         );

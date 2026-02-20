@@ -19,6 +19,7 @@ package org.fireflyframework.workflow.eventsourcing.snapshot;
 import org.fireflyframework.eventsourcing.snapshot.AbstractSnapshot;
 import org.fireflyframework.workflow.eventsourcing.aggregate.WorkflowAggregate;
 import org.fireflyframework.workflow.eventsourcing.aggregate.WorkflowAggregate.ChildWorkflowRef;
+import org.fireflyframework.workflow.eventsourcing.aggregate.WorkflowAggregate.CompensationStepResult;
 import org.fireflyframework.workflow.eventsourcing.aggregate.WorkflowAggregate.SignalData;
 import org.fireflyframework.workflow.eventsourcing.aggregate.WorkflowAggregate.StepState;
 import org.fireflyframework.workflow.eventsourcing.aggregate.WorkflowAggregate.TimerData;
@@ -80,6 +81,12 @@ public class WorkflowSnapshot extends AbstractSnapshot implements Serializable {
     private final Map<String, Object> input;
     private final Object output;
 
+    // --- Error tracking ---
+
+    private final String errorMessage;
+    private final String errorType;
+    private final String failedStepId;
+
     // --- Execution metadata ---
 
     private final String correlationId;
@@ -99,6 +106,16 @@ public class WorkflowSnapshot extends AbstractSnapshot implements Serializable {
     private final Map<String, Map<String, Object>> lastHeartbeats;
     private final List<String> completedStepOrder;
 
+    // --- Signal waiters ---
+
+    private final Map<String, String> signalWaiters;
+
+    // --- Compensation state ---
+
+    private final boolean compensating;
+    private final String compensationPolicy;
+    private final Map<String, CompensationStepResult> compensatedSteps;
+
     /**
      * Constructs a WorkflowSnapshot with all captured state.
      * <p>
@@ -111,6 +128,7 @@ public class WorkflowSnapshot extends AbstractSnapshot implements Serializable {
                      String workflowId, String workflowName, String workflowVersion,
                      WorkflowStatus status, String currentStepId,
                      Map<String, Object> context, Map<String, Object> input, Object output,
+                     String errorMessage, String errorType, String failedStepId,
                      String correlationId, String triggeredBy, boolean dryRun,
                      Instant startedAt, Instant completedAt,
                      Map<String, StepStateData> stepStatesSnapshot,
@@ -120,7 +138,10 @@ public class WorkflowSnapshot extends AbstractSnapshot implements Serializable {
                      Map<String, Object> sideEffects,
                      Map<String, Object> searchAttributes,
                      Map<String, Map<String, Object>> lastHeartbeats,
-                     List<String> completedStepOrder) {
+                     List<String> completedStepOrder,
+                     Map<String, String> signalWaiters,
+                     boolean compensating, String compensationPolicy,
+                     Map<String, CompensationStepResult> compensatedSteps) {
         super(aggregateId, version, createdAt);
         this.workflowId = workflowId;
         this.workflowName = workflowName;
@@ -130,6 +151,9 @@ public class WorkflowSnapshot extends AbstractSnapshot implements Serializable {
         this.context = context != null ? new HashMap<>(context) : new HashMap<>();
         this.input = input != null ? new HashMap<>(input) : new HashMap<>();
         this.output = output;
+        this.errorMessage = errorMessage;
+        this.errorType = errorType;
+        this.failedStepId = failedStepId;
         this.correlationId = correlationId;
         this.triggeredBy = triggeredBy;
         this.dryRun = dryRun;
@@ -151,6 +175,12 @@ public class WorkflowSnapshot extends AbstractSnapshot implements Serializable {
                 ? deepCopyHeartbeats(lastHeartbeats) : new HashMap<>();
         this.completedStepOrder = completedStepOrder != null
                 ? new ArrayList<>(completedStepOrder) : new ArrayList<>();
+        this.signalWaiters = signalWaiters != null
+                ? new HashMap<>(signalWaiters) : new HashMap<>();
+        this.compensating = compensating;
+        this.compensationPolicy = compensationPolicy;
+        this.compensatedSteps = compensatedSteps != null
+                ? new HashMap<>(compensatedSteps) : new HashMap<>();
     }
 
     @Override
@@ -191,6 +221,9 @@ public class WorkflowSnapshot extends AbstractSnapshot implements Serializable {
                 .input(aggregate.getInput() != null
                         ? new HashMap<>(aggregate.getInput()) : new HashMap<>())
                 .output(aggregate.getOutput())
+                .errorMessage(aggregate.getErrorMessage())
+                .errorType(aggregate.getErrorType())
+                .failedStepId(aggregate.getFailedStepId())
                 .correlationId(aggregate.getCorrelationId())
                 .triggeredBy(aggregate.getTriggeredBy())
                 .dryRun(aggregate.isDryRun())
@@ -204,6 +237,10 @@ public class WorkflowSnapshot extends AbstractSnapshot implements Serializable {
                 .searchAttributes(new HashMap<>(aggregate.getSearchAttributes()))
                 .lastHeartbeats(deepCopyHeartbeats(aggregate.getLastHeartbeats()))
                 .completedStepOrder(new ArrayList<>(aggregate.getCompletedStepOrder()))
+                .signalWaiters(new HashMap<>(aggregate.getSignalWaiters()))
+                .compensating(aggregate.isCompensating())
+                .compensationPolicy(aggregate.getCompensationPolicy())
+                .compensatedSteps(new HashMap<>(aggregate.getCompensatedSteps()))
                 .build();
     }
 

@@ -189,11 +189,13 @@ class SignalServiceTest {
     class ConsumeSignalTests {
 
         @Test
-        @DisplayName("should return buffered payload when signal is pending")
+        @DisplayName("should return buffered payload and persist consumption event")
         void consumeSignal_shouldReturnBufferedPayload() {
             WorkflowAggregate aggregate = createAggregateWithPendingSignal();
 
             when(stateStore.loadAggregate(AGGREGATE_ID)).thenReturn(Mono.just(aggregate));
+            when(stateStore.saveAggregate(any(WorkflowAggregate.class)))
+                    .thenAnswer(invocation -> Mono.just(invocation.getArgument(0)));
 
             StepVerifier.create(signalService.consumeSignal(INSTANCE_ID, SIGNAL_NAME))
                     .assertNext(payload -> {
@@ -203,6 +205,10 @@ class SignalServiceTest {
                     .verifyComplete();
 
             verify(stateStore).loadAggregate(AGGREGATE_ID);
+            verify(stateStore).saveAggregate(any(WorkflowAggregate.class));
+
+            // Verify the signal was removed from pending
+            assertThat(aggregate.getPendingSignals()).doesNotContainKey(SIGNAL_NAME);
         }
 
         @Test

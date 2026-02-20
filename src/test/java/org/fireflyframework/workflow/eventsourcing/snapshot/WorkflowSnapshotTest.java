@@ -512,6 +512,84 @@ class WorkflowSnapshotTest {
     }
 
     // ========================================================================
+    // Error, Signal Waiter, Compensation Round-Trip Tests
+    // ========================================================================
+
+    @Nested
+    @DisplayName("Round-trip with error, signal waiters, and compensation state")
+    class NewFieldsRoundTripTests {
+
+        @Test
+        @DisplayName("should preserve error fields through snapshot round-trip")
+        void shouldPreserveErrorFields() {
+            aggregate.start(WORKFLOW_ID, WORKFLOW_NAME, WORKFLOW_VERSION,
+                    INPUT, CORRELATION_ID, TRIGGERED_BY, false);
+            aggregate.fail("NullPointerException in step", "NullPointerException", "step-2");
+
+            WorkflowSnapshot snapshot = WorkflowSnapshot.from(aggregate);
+            WorkflowAggregate restored = snapshot.restore();
+
+            assertThat(restored.getErrorMessage()).isEqualTo("NullPointerException in step");
+            assertThat(restored.getErrorType()).isEqualTo("NullPointerException");
+            assertThat(restored.getFailedStepId()).isEqualTo("step-2");
+        }
+
+        @Test
+        @DisplayName("should preserve signal waiters through snapshot round-trip")
+        void shouldPreserveSignalWaiters() {
+            aggregate.start(WORKFLOW_ID, WORKFLOW_NAME, WORKFLOW_VERSION,
+                    INPUT, CORRELATION_ID, TRIGGERED_BY, false);
+            aggregate.registerSignalWaiter("approval", "wait-step-1");
+            aggregate.registerSignalWaiter("payment", "wait-step-2");
+
+            WorkflowSnapshot snapshot = WorkflowSnapshot.from(aggregate);
+            WorkflowAggregate restored = snapshot.restore();
+
+            assertThat(restored.getSignalWaiters()).hasSize(2);
+            assertThat(restored.getSignalWaiters()).containsEntry("approval", "wait-step-1");
+            assertThat(restored.getSignalWaiters()).containsEntry("payment", "wait-step-2");
+        }
+
+        @Test
+        @DisplayName("should preserve compensation state through snapshot round-trip")
+        void shouldPreserveCompensationState() {
+            aggregate.start(WORKFLOW_ID, WORKFLOW_NAME, WORKFLOW_VERSION,
+                    INPUT, CORRELATION_ID, TRIGGERED_BY, false);
+            aggregate.startCompensation("step-3", "STRICT_SEQUENTIAL");
+            aggregate.completeCompensationStep("step-2", true, null);
+            aggregate.completeCompensationStep("step-1", false, "Undo failed");
+
+            WorkflowSnapshot snapshot = WorkflowSnapshot.from(aggregate);
+            WorkflowAggregate restored = snapshot.restore();
+
+            assertThat(restored.isCompensating()).isTrue();
+            assertThat(restored.getCompensationPolicy()).isEqualTo("STRICT_SEQUENTIAL");
+            assertThat(restored.getCompensatedSteps()).hasSize(2);
+            assertThat(restored.getCompensatedSteps().get("step-2").success()).isTrue();
+            assertThat(restored.getCompensatedSteps().get("step-1").success()).isFalse();
+            assertThat(restored.getCompensatedSteps().get("step-1").errorMessage()).isEqualTo("Undo failed");
+        }
+
+        @Test
+        @DisplayName("should handle no errors in snapshot")
+        void shouldHandleNoErrors() {
+            aggregate.start(WORKFLOW_ID, WORKFLOW_NAME, WORKFLOW_VERSION,
+                    INPUT, CORRELATION_ID, TRIGGERED_BY, false);
+
+            WorkflowSnapshot snapshot = WorkflowSnapshot.from(aggregate);
+            WorkflowAggregate restored = snapshot.restore();
+
+            assertThat(restored.getErrorMessage()).isNull();
+            assertThat(restored.getErrorType()).isNull();
+            assertThat(restored.getFailedStepId()).isNull();
+            assertThat(restored.getSignalWaiters()).isEmpty();
+            assertThat(restored.isCompensating()).isFalse();
+            assertThat(restored.getCompensationPolicy()).isNull();
+            assertThat(restored.getCompensatedSteps()).isEmpty();
+        }
+    }
+
+    // ========================================================================
     // StepStateData Tests
     // ========================================================================
 

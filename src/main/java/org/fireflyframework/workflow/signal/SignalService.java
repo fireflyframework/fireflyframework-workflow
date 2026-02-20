@@ -103,13 +103,9 @@ public class SignalService {
      * Consumes a pending signal from a workflow instance.
      * <p>
      * If the aggregate has a buffered signal with the given name in its
-     * {@code pendingSignals} map, this method returns its payload. This is
+     * {@code pendingSignals} map, this method returns its payload and persists
+     * a {@code SignalConsumedEvent} to remove it from the pending map. This is
      * used internally by steps that are waiting for signals.
-     * <p>
-     * Note: In the current implementation, this is a read-only operation that
-     * returns the buffered payload without removing it. Signal consumption
-     * (removal from the pending map) will be handled via a dedicated event
-     * in a future iteration.
      *
      * @param instanceId the workflow instance identifier
      * @param signalName the name of the signal to consume
@@ -130,12 +126,17 @@ public class SignalService {
                 .flatMap(aggregate -> {
                     WorkflowAggregate.SignalData signalData = aggregate.getPendingSignals().get(signalName);
                     if (signalData != null) {
-                        log.debug("Found pending signal '{}' for instance: {}, receivedAt={}",
+                        Map<String, Object> payload = signalData.payload();
+                        log.debug("Consuming pending signal '{}' for instance: {}, receivedAt={}",
                                 signalName, instanceId, signalData.receivedAt());
-                        return Mono.just(signalData.payload());
+
+                        aggregate.consumeSignal(signalName, null);
+
+                        return stateStore.saveAggregate(aggregate)
+                                .thenReturn(payload);
                     }
                     log.debug("No pending signal '{}' found for instance: {}", signalName, instanceId);
-                    return Mono.empty();
+                    return Mono.<Map<String, Object>>empty();
                 })
                 .switchIfEmpty(Mono.defer(() -> {
                     log.debug("Aggregate not found or no signal for instance: {}", instanceId);

@@ -311,7 +311,7 @@ Additional auto-configuration classes:
 
 ## Domain Events (Durable Execution)
 
-When durable execution is enabled, the `WorkflowAggregate` produces 22 domain event types:
+When durable execution is enabled, the `WorkflowAggregate` produces 24 domain event types:
 
 | # | Event | Category | Description |
 |---|-------|----------|-------------|
@@ -327,16 +327,18 @@ When durable execution is enabled, the `WorkflowAggregate` produces 22 domain ev
 | 10 | `StepSkippedEvent` | Step | Step skipped |
 | 11 | `StepRetriedEvent` | Step | Step retry |
 | 12 | `SignalReceivedEvent` | Signal | External signal received |
-| 13 | `TimerRegisteredEvent` | Timer | Timer scheduled |
-| 14 | `TimerFiredEvent` | Timer | Timer fired |
-| 15 | `ChildWorkflowSpawnedEvent` | Child | Child workflow started |
-| 16 | `ChildWorkflowCompletedEvent` | Child | Child workflow finished |
-| 17 | `SideEffectRecordedEvent` | Replay | Side effect value recorded |
-| 18 | `HeartbeatRecordedEvent` | Heartbeat | Step heartbeat |
-| 19 | `ContinueAsNewEvent` | Lifecycle | Workflow continued as new |
-| 20 | `CompensationStartedEvent` | Compensation | Compensation started |
-| 21 | `CompensationStepCompletedEvent` | Compensation | Compensation step done |
-| 22 | `SearchAttributeUpdatedEvent` | Search | Search attribute updated |
+| 13 | `SignalConsumedEvent` | Signal | Buffered signal consumed |
+| 14 | `SignalWaiterRegisteredEvent` | Signal | Step registered as signal waiter |
+| 15 | `TimerRegisteredEvent` | Timer | Timer scheduled |
+| 16 | `TimerFiredEvent` | Timer | Timer fired |
+| 17 | `ChildWorkflowSpawnedEvent` | Child | Child workflow started |
+| 18 | `ChildWorkflowCompletedEvent` | Child | Child workflow finished |
+| 19 | `SideEffectRecordedEvent` | Replay | Side effect value recorded |
+| 20 | `HeartbeatRecordedEvent` | Heartbeat | Step heartbeat |
+| 21 | `ContinueAsNewEvent` | Lifecycle | Workflow continued as new |
+| 22 | `CompensationStartedEvent` | Compensation | Compensation started |
+| 23 | `CompensationStepCompletedEvent` | Compensation | Compensation step done |
+| 24 | `SearchAttributeUpdatedEvent` | Search | Search attribute updated |
 
 ## Next Steps
 

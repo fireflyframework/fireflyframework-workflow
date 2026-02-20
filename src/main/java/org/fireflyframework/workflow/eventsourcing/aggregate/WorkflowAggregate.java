@@ -72,6 +72,12 @@ public class WorkflowAggregate extends AggregateRoot {
     private Map<String, Object> input;
     private Object output;
 
+    // --- Error tracking ---
+
+    private String errorMessage;
+    private String errorType;
+    private String failedStepId;
+
     // --- Execution metadata ---
 
     private String correlationId;
@@ -105,6 +111,12 @@ public class WorkflowAggregate extends AggregateRoot {
     // --- Search attributes ---
 
     private final Map<String, Object> searchAttributes = new ConcurrentHashMap<>();
+
+    // --- Compensation tracking ---
+
+    private boolean compensating;
+    private String compensationPolicy;
+    private final Map<String, CompensationStepResult> compensatedSteps = new ConcurrentHashMap<>();
 
     // --- Heartbeats ---
 
@@ -349,6 +361,43 @@ public class WorkflowAggregate extends AggregateRoot {
     }
 
     /**
+     * Registers a step as waiting for an external signal.
+     *
+     * @param signalName    the signal name to wait for
+     * @param waitingStepId the step that is waiting
+     * @throws IllegalStateException if the workflow is in a terminal state
+     */
+    public void registerSignalWaiter(String signalName, String waitingStepId) {
+        requireNonTerminal("register signal waiter");
+
+        applyChange(SignalWaiterRegisteredEvent.builder()
+                .aggregateId(getId())
+                .signalName(signalName)
+                .waitingStepId(waitingStepId)
+                .build());
+    }
+
+    /**
+     * Consumes a pending signal, removing it from the pending signals map.
+     *
+     * @param signalName      the signal name to consume
+     * @param consumedByStepId the step that is consuming the signal, or null
+     * @throws IllegalStateException if no pending signal with the given name exists
+     */
+    public void consumeSignal(String signalName, String consumedByStepId) {
+        if (!pendingSignals.containsKey(signalName)) {
+            throw new IllegalStateException(
+                    "Cannot consume signal: no pending signal with name '" + signalName + "'");
+        }
+
+        applyChange(SignalConsumedEvent.builder()
+                .aggregateId(getId())
+                .signalName(signalName)
+                .consumedByStepId(consumedByStepId)
+                .build());
+    }
+
+    /**
      * Registers a durable timer.
      *
      * @param timerId the timer identifier
@@ -553,6 +602,9 @@ public class WorkflowAggregate extends AggregateRoot {
     @SuppressWarnings("unused")
     private void on(WorkflowFailedEvent event) {
         this.status = WorkflowStatus.FAILED;
+        this.errorMessage = event.getErrorMessage();
+        this.errorType = event.getErrorType();
+        this.failedStepId = event.getFailedStepId();
         this.completedAt = event.getEventTimestamp();
     }
 
@@ -645,6 +697,17 @@ public class WorkflowAggregate extends AggregateRoot {
     }
 
     @SuppressWarnings("unused")
+    private void on(SignalWaiterRegisteredEvent event) {
+        signalWaiters.put(event.getSignalName(), event.getWaitingStepId());
+    }
+
+    @SuppressWarnings("unused")
+    private void on(SignalConsumedEvent event) {
+        pendingSignals.remove(event.getSignalName());
+        signalWaiters.remove(event.getSignalName());
+    }
+
+    @SuppressWarnings("unused")
     private void on(TimerRegisteredEvent event) {
         activeTimers.put(event.getTimerId(), new TimerData(
                 event.getTimerId(),
@@ -697,14 +760,16 @@ public class WorkflowAggregate extends AggregateRoot {
 
     @SuppressWarnings("unused")
     private void on(CompensationStartedEvent event) {
-        // Compensation started — state tracked externally by orchestrator
-        log.debug("Compensation started for workflow {}, failed step: {}, policy: {}",
-                getId(), event.getFailedStepId(), event.getCompensationPolicy());
+        this.compensating = true;
+        this.compensationPolicy = event.getCompensationPolicy();
     }
 
     @SuppressWarnings("unused")
     private void on(CompensationStepCompletedEvent event) {
-        log.debug("Compensation step completed: stepId={}, success={}", event.getStepId(), event.isSuccess());
+        compensatedSteps.put(event.getStepId(), new CompensationStepResult(
+                event.getStepId(),
+                event.isSuccess(),
+                event.getErrorMessage()));
     }
 
     @SuppressWarnings("unused")
@@ -737,6 +802,9 @@ public class WorkflowAggregate extends AggregateRoot {
         this.input = snapshot.getInput() != null
                 ? new HashMap<>(snapshot.getInput()) : new HashMap<>();
         this.output = snapshot.getOutput();
+        this.errorMessage = snapshot.getErrorMessage();
+        this.errorType = snapshot.getErrorType();
+        this.failedStepId = snapshot.getFailedStepId();
         this.correlationId = snapshot.getCorrelationId();
         this.triggeredBy = snapshot.getTriggeredBy();
         this.dryRun = snapshot.isDryRun();
@@ -792,6 +860,20 @@ public class WorkflowAggregate extends AggregateRoot {
         this.completedStepOrder.clear();
         if (snapshot.getCompletedStepOrder() != null) {
             this.completedStepOrder.addAll(snapshot.getCompletedStepOrder());
+        }
+
+        // Restore signal waiters
+        this.signalWaiters.clear();
+        if (snapshot.getSignalWaiters() != null) {
+            this.signalWaiters.putAll(snapshot.getSignalWaiters());
+        }
+
+        // Restore compensation state
+        this.compensating = snapshot.isCompensating();
+        this.compensationPolicy = snapshot.getCompensationPolicy();
+        this.compensatedSteps.clear();
+        if (snapshot.getCompensatedSteps() != null) {
+            this.compensatedSteps.putAll(snapshot.getCompensatedSteps());
         }
 
         // Restore the aggregate version
@@ -891,6 +973,12 @@ public class WorkflowAggregate extends AggregateRoot {
      * Represents a registered durable timer.
      */
     public record TimerData(String timerId, Instant fireAt, Map<String, Object> data) {
+    }
+
+    /**
+     * Represents the result of a compensation step execution.
+     */
+    public record CompensationStepResult(String stepId, boolean success, String errorMessage) {
     }
 
     /**

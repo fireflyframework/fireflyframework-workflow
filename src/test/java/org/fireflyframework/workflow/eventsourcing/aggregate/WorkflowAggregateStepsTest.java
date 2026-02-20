@@ -220,6 +220,78 @@ class WorkflowAggregateStepsTest {
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("terminal");
         }
+
+        @Test
+        @DisplayName("consumeSignal should remove signal from pendingSignals")
+        void consumeSignalShouldRemoveFromPending() {
+            aggregate.receiveSignal("approval", Map.of("approved", true));
+            assertThat(aggregate.getPendingSignals()).containsKey("approval");
+
+            aggregate.consumeSignal("approval", "step-1");
+
+            assertThat(aggregate.getPendingSignals()).doesNotContainKey("approval");
+        }
+
+        @Test
+        @DisplayName("consumeSignal should throw if signal does not exist")
+        void consumeSignalShouldThrowIfNotExists() {
+            assertThatThrownBy(() -> aggregate.consumeSignal("nonexistent", "step-1"))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("nonexistent");
+        }
+
+        @Test
+        @DisplayName("consumeSignal should also clear the signal waiter")
+        void consumeSignalShouldClearWaiter() {
+            aggregate.registerSignalWaiter("approval", "step-waiting");
+            aggregate.receiveSignal("approval", Map.of("ok", true));
+
+            assertThat(aggregate.getSignalWaiters()).containsKey("approval");
+
+            aggregate.consumeSignal("approval", "step-waiting");
+
+            assertThat(aggregate.getSignalWaiters()).doesNotContainKey("approval");
+            assertThat(aggregate.getPendingSignals()).doesNotContainKey("approval");
+        }
+    }
+
+    // ========================================================================
+    // Signal Waiter Tests
+    // ========================================================================
+
+    @Nested
+    @DisplayName("Signal Waiter Registration")
+    class SignalWaiterTests {
+
+        @Test
+        @DisplayName("registerSignalWaiter should populate signalWaiters map")
+        void registerSignalWaiterShouldPopulateMap() {
+            aggregate.registerSignalWaiter("approval", "wait-step-1");
+
+            assertThat(aggregate.getSignalWaiters())
+                    .containsEntry("approval", "wait-step-1");
+        }
+
+        @Test
+        @DisplayName("should support multiple signal waiters")
+        void shouldSupportMultipleWaiters() {
+            aggregate.registerSignalWaiter("approval", "step-1");
+            aggregate.registerSignalWaiter("payment", "step-2");
+
+            assertThat(aggregate.getSignalWaiters()).hasSize(2);
+            assertThat(aggregate.getSignalWaiters()).containsEntry("approval", "step-1");
+            assertThat(aggregate.getSignalWaiters()).containsEntry("payment", "step-2");
+        }
+
+        @Test
+        @DisplayName("should throw when registering waiter on terminal workflow")
+        void shouldThrowOnTerminalWorkflow() {
+            aggregate.complete(Map.of("done", true));
+
+            assertThatThrownBy(() -> aggregate.registerSignalWaiter("approval", "step-1"))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("terminal");
+        }
     }
 
     // ========================================================================
@@ -445,21 +517,30 @@ class WorkflowAggregateStepsTest {
     class CompensationTests {
 
         @Test
-        @DisplayName("startCompensation should produce event without error")
-        void startCompensationShouldSucceed() {
-            int eventsBefore = aggregate.getUncommittedEventCount();
-            aggregate.startCompensation("step-3", "REVERSE_ORDER");
+        @DisplayName("startCompensation should set compensating flag and policy")
+        void startCompensationShouldSetState() {
+            aggregate.startCompensation("step-3", "STRICT_SEQUENTIAL");
 
-            assertThat(aggregate.getUncommittedEventCount()).isEqualTo(eventsBefore + 1);
+            assertThat(aggregate.isCompensating()).isTrue();
+            assertThat(aggregate.getCompensationPolicy()).isEqualTo("STRICT_SEQUENTIAL");
         }
 
         @Test
-        @DisplayName("completeCompensationStep should produce event without error")
-        void completeCompensationStepShouldSucceed() {
-            int eventsBefore = aggregate.getUncommittedEventCount();
+        @DisplayName("completeCompensationStep should track step result")
+        void completeCompensationStepShouldTrackResult() {
+            aggregate.startCompensation("step-3", "STRICT_SEQUENTIAL");
             aggregate.completeCompensationStep("step-2", true, null);
+            aggregate.completeCompensationStep("step-1", false, "Compensation failed");
 
-            assertThat(aggregate.getUncommittedEventCount()).isEqualTo(eventsBefore + 1);
+            assertThat(aggregate.getCompensatedSteps()).hasSize(2);
+
+            WorkflowAggregate.CompensationStepResult step2 = aggregate.getCompensatedSteps().get("step-2");
+            assertThat(step2.success()).isTrue();
+            assertThat(step2.errorMessage()).isNull();
+
+            WorkflowAggregate.CompensationStepResult step1 = aggregate.getCompensatedSteps().get("step-1");
+            assertThat(step1.success()).isFalse();
+            assertThat(step1.errorMessage()).isEqualTo("Compensation failed");
         }
     }
 

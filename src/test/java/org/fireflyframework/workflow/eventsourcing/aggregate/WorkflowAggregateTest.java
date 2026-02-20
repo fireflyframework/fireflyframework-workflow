@@ -428,6 +428,52 @@ class WorkflowAggregateTest {
     }
 
     // ========================================================================
+    // Error Tracking Tests
+    // ========================================================================
+
+    @Nested
+    @DisplayName("Error Tracking")
+    class ErrorTrackingTests {
+
+        @BeforeEach
+        void startWorkflow() {
+            aggregate.start(WORKFLOW_ID, WORKFLOW_NAME, WORKFLOW_VERSION,
+                    INPUT, CORRELATION_ID, TRIGGERED_BY, false);
+        }
+
+        @Test
+        @DisplayName("should store error details on failure")
+        void shouldStoreErrorDetails() {
+            aggregate.fail("Connection timeout", "TimeoutException", "step-2");
+
+            assertThat(aggregate.getErrorMessage()).isEqualTo("Connection timeout");
+            assertThat(aggregate.getErrorType()).isEqualTo("TimeoutException");
+            assertThat(aggregate.getFailedStepId()).isEqualTo("step-2");
+        }
+
+        @Test
+        @DisplayName("should have null error fields before failure")
+        void shouldHaveNullErrorFieldsBeforeFailure() {
+            assertThat(aggregate.getErrorMessage()).isNull();
+            assertThat(aggregate.getErrorType()).isNull();
+            assertThat(aggregate.getFailedStepId()).isNull();
+        }
+
+        @Test
+        @DisplayName("error fields should survive snapshot round-trip")
+        void errorFieldsShouldSurviveRoundTrip() {
+            aggregate.fail("NullPointerException occurred", "NullPointerException", "validate");
+
+            var snapshot = org.fireflyframework.workflow.eventsourcing.snapshot.WorkflowSnapshot.from(aggregate);
+            WorkflowAggregate restored = snapshot.restore();
+
+            assertThat(restored.getErrorMessage()).isEqualTo("NullPointerException occurred");
+            assertThat(restored.getErrorType()).isEqualTo("NullPointerException");
+            assertThat(restored.getFailedStepId()).isEqualTo("validate");
+        }
+    }
+
+    // ========================================================================
     // Event Version Tests
     // ========================================================================
 
