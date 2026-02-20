@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -29,6 +30,7 @@ import lombok.experimental.SuperBuilder;
  * This event is recorded when an individual step within a workflow finishes
  * execution and produces an output. It captures the result and execution duration.
  */
+@JsonTypeName("workflow.step.completed")
 @DomainEvent("workflow.step.completed")
 @SuperBuilder
 @Getter

@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -29,6 +30,7 @@ import lombok.experimental.SuperBuilder;
  * This event is recorded when a previously registered timer reaches its
  * fire time. During replay, this event ensures deterministic timer behavior.
  */
+@JsonTypeName("workflow.timer.fired")
 @DomainEvent("workflow.timer.fired")
 @SuperBuilder
 @Getter

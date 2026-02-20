@@ -438,17 +438,17 @@ class WorkflowAggregateTest {
         @Test
         @DisplayName("should increment version with each event")
         void shouldIncrementVersion() {
-            assertThat(aggregate.getCurrentVersion()).isEqualTo(0L);
+            assertThat(aggregate.getCurrentVersion()).isEqualTo(-1L);
 
             aggregate.start(WORKFLOW_ID, WORKFLOW_NAME, WORKFLOW_VERSION,
                     INPUT, CORRELATION_ID, TRIGGERED_BY, false);
-            assertThat(aggregate.getCurrentVersion()).isEqualTo(1L);
+            assertThat(aggregate.getCurrentVersion()).isEqualTo(0L);
 
             aggregate.suspend("reason");
-            assertThat(aggregate.getCurrentVersion()).isEqualTo(2L);
+            assertThat(aggregate.getCurrentVersion()).isEqualTo(1L);
 
             aggregate.resume();
-            assertThat(aggregate.getCurrentVersion()).isEqualTo(3L);
+            assertThat(aggregate.getCurrentVersion()).isEqualTo(2L);
         }
     }
 

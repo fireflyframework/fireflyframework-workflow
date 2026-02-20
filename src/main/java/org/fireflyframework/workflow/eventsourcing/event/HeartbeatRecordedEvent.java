@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -32,6 +33,7 @@ import java.util.Map;
  * heartbeat to indicate it is still making progress. Heartbeats are
  * used for liveness detection and can carry progress details.
  */
+@JsonTypeName("workflow.heartbeat.recorded")
 @DomainEvent("workflow.heartbeat.recorded")
 @SuperBuilder
 @Getter

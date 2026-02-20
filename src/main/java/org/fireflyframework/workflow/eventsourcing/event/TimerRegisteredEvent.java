@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -33,6 +34,7 @@ import java.util.Map;
  * at a specified time. Durable timers survive process restarts and are
  * guaranteed to fire even after workflow replay.
  */
+@JsonTypeName("workflow.timer.registered")
 @DomainEvent("workflow.timer.registered")
 @SuperBuilder
 @Getter

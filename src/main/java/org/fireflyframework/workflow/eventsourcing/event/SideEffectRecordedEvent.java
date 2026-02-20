@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -31,6 +32,7 @@ import lombok.experimental.SuperBuilder;
  * returned instead of re-executing the operation, ensuring deterministic
  * workflow behavior.
  */
+@JsonTypeName("workflow.side-effect.recorded")
 @DomainEvent("workflow.side-effect.recorded")
 @SuperBuilder
 @Getter

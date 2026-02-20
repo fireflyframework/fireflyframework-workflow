@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.Getter;
@@ -29,6 +30,7 @@ import lombok.experimental.SuperBuilder;
  * resumes execution, typically after receiving a signal, timer firing,
  * or manual intervention.
  */
+@JsonTypeName("workflow.resumed")
 @DomainEvent("workflow.resumed")
 @SuperBuilder
 @Getter

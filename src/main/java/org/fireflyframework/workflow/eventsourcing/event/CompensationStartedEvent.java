@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -30,6 +31,7 @@ import lombok.experimental.SuperBuilder;
  * logic to undo the effects of previously completed steps, typically
  * in response to a failure in a later step (saga pattern).
  */
+@JsonTypeName("workflow.compensation.started")
 @DomainEvent("workflow.compensation.started")
 @SuperBuilder
 @Getter

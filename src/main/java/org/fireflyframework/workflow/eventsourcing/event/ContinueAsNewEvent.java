@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -32,6 +33,7 @@ import java.util.Map;
  * immediately starts a new execution with fresh event history. This is
  * used to prevent unbounded event history growth in long-running workflows.
  */
+@JsonTypeName("workflow.continue-as-new")
 @DomainEvent("workflow.continue-as-new")
 @SuperBuilder
 @Getter

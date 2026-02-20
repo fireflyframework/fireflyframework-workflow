@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -30,6 +31,7 @@ import lombok.experimental.SuperBuilder;
  * which enables querying and filtering workflow instances by business-specific
  * criteria beyond the standard workflow metadata.
  */
+@JsonTypeName("workflow.search-attribute.updated")
 @DomainEvent("workflow.search-attribute.updated")
 @SuperBuilder
 @Getter

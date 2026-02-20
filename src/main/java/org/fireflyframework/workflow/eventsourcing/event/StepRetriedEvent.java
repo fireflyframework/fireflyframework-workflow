@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -30,6 +31,7 @@ import lombok.experimental.SuperBuilder;
  * a retry attempt. It captures the attempt number and the delay before
  * the retry begins.
  */
+@JsonTypeName("workflow.step.retried")
 @DomainEvent("workflow.step.retried")
 @SuperBuilder
 @Getter

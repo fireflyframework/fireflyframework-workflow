@@ -239,7 +239,7 @@ class EventSourcedWorkflowStateStoreTest {
                     .build();
 
             when(eventStore.appendEvents(eq(AGGREGATE_ID), eq("workflow"),
-                    anyList(), eq(0L), eq(Map.of())))
+                    anyList(), eq(-1L), eq(Map.of())))
                     .thenReturn(Mono.just(resultStream));
 
             StepVerifier.create(store.saveAggregate(aggregate))
@@ -251,7 +251,7 @@ class EventSourcedWorkflowStateStoreTest {
                     .verifyComplete();
 
             verify(eventStore).appendEvents(eq(AGGREGATE_ID), eq("workflow"),
-                    eventsCaptor.capture(), eq(0L), eq(Map.of()));
+                    eventsCaptor.capture(), eq(-1L), eq(Map.of()));
 
             List<Event> capturedEvents = eventsCaptor.getValue();
             assertThat(capturedEvents).hasSize(1);
@@ -281,20 +281,20 @@ class EventSourcedWorkflowStateStoreTest {
             // Now apply two more events — step start + step complete
             aggregate.startStep("step-1", "Validate", Map.of(), 1);
             aggregate.completeStep("step-1", Map.of("valid", true), 100L);
-            // aggregate version is now 3, with 2 uncommitted events
-            // expected version = 3 - 2 = 1
+            // aggregate version is now 2, with 2 uncommitted events
+            // expected version = 2 - 2 = 0
             assertThat(aggregate.getUncommittedEventCount()).isEqualTo(2);
-            assertThat(aggregate.getCurrentVersion()).isEqualTo(3L);
+            assertThat(aggregate.getCurrentVersion()).isEqualTo(2L);
 
             EventStream resultStream = EventStream.builder()
                     .aggregateId(AGGREGATE_ID)
                     .aggregateType("workflow")
-                    .currentVersion(3L)
+                    .currentVersion(2L)
                     .events(List.of())
                     .build();
 
             when(eventStore.appendEvents(eq(AGGREGATE_ID), eq("workflow"),
-                    anyList(), eq(1L), eq(Map.of())))
+                    anyList(), eq(0L), eq(Map.of())))
                     .thenReturn(Mono.just(resultStream));
 
             StepVerifier.create(store.saveAggregate(aggregate))
@@ -304,7 +304,7 @@ class EventSourcedWorkflowStateStoreTest {
                     .verifyComplete();
 
             verify(eventStore).appendEvents(eq(AGGREGATE_ID), eq("workflow"),
-                    eventsCaptor.capture(), eq(1L), eq(Map.of()));
+                    eventsCaptor.capture(), eq(0L), eq(Map.of()));
             assertThat(eventsCaptor.getValue()).hasSize(2);
         }
     }

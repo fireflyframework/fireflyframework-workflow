@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -30,6 +31,7 @@ import lombok.experimental.SuperBuilder;
  * execution during saga rollback. It captures whether the compensation
  * was successful and any error that may have occurred.
  */
+@JsonTypeName("workflow.compensation.step.completed")
 @DomainEvent("workflow.compensation.step.completed")
 @SuperBuilder
 @Getter

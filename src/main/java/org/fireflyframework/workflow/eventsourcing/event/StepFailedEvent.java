@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -30,6 +31,7 @@ import lombok.experimental.SuperBuilder;
  * an error. It captures the error details, the current attempt number, and
  * whether the step can be retried.
  */
+@JsonTypeName("workflow.step.failed")
 @DomainEvent("workflow.step.failed")
 @SuperBuilder
 @Getter

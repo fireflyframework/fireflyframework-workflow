@@ -294,8 +294,8 @@ class WorkflowSnapshotTest {
 
             WorkflowSnapshot snapshot = WorkflowSnapshot.from(aggregate);
 
-            // start(1) + startStep(1) + completeStep(1) = version 3
-            assertThat(snapshot.getVersion()).isEqualTo(3L);
+            // start(1) + startStep(1) + completeStep(1) = 3 events, version = 3 - 1 = 2
+            assertThat(snapshot.getVersion()).isEqualTo(2L);
         }
 
         @Test
@@ -328,8 +328,8 @@ class WorkflowSnapshotTest {
 
             WorkflowSnapshot snapshot = WorkflowSnapshot.from(aggregate);
 
-            assertThat(snapshot.isForVersion(1L)).isTrue();
-            assertThat(snapshot.isForVersion(0L)).isFalse();
+            assertThat(snapshot.isForVersion(0L)).isTrue();
+            assertThat(snapshot.isForVersion(1L)).isFalse();
         }
 
         @Test
@@ -340,8 +340,8 @@ class WorkflowSnapshotTest {
 
             WorkflowSnapshot snapshot = WorkflowSnapshot.from(aggregate);
 
-            assertThat(snapshot.isNewerThan(0L)).isTrue();
-            assertThat(snapshot.isNewerThan(1L)).isFalse();
+            assertThat(snapshot.isNewerThan(-1L)).isTrue();
+            assertThat(snapshot.isNewerThan(0L)).isFalse();
         }
     }
 

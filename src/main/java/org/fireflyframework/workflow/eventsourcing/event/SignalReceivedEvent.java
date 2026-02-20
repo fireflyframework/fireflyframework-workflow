@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -32,6 +33,7 @@ import java.util.Map;
  * which can be used to communicate data or trigger state transitions from
  * outside the workflow execution.
  */
+@JsonTypeName("workflow.signal.received")
 @DomainEvent("workflow.signal.received")
 @SuperBuilder
 @Getter

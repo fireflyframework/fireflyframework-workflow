@@ -62,6 +62,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
@@ -193,7 +194,8 @@ public class WorkflowEngineAutoConfiguration {
     // ==================== Durable Execution Beans ====================
 
     @Bean
-    @ConditionalOnMissingBean
+    @Primary
+    @ConditionalOnMissingBean(EventSourcedWorkflowStateStore.class)
     @ConditionalOnBean(EventStore.class)
     @ConditionalOnProperty(prefix = "firefly.workflow.eventsourcing", name = "enabled", havingValue = "true")
     public EventSourcedWorkflowStateStore eventSourcedWorkflowStateStore(EventStore eventStore) {

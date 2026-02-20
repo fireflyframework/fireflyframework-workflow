@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -30,6 +31,7 @@ import lombok.experimental.SuperBuilder;
  * child workflow finishes. It captures the child's output and whether
  * it completed successfully or with an error.
  */
+@JsonTypeName("workflow.child.completed")
 @DomainEvent("workflow.child.completed")
 @SuperBuilder
 @Getter

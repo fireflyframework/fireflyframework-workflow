@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -32,6 +33,7 @@ import java.util.Map;
  * execution. It captures the step identity, input, and the current attempt
  * number for retry tracking.
  */
+@JsonTypeName("workflow.step.started")
 @DomainEvent("workflow.step.started")
 @SuperBuilder
 @Getter

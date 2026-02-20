@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -32,6 +33,7 @@ import java.util.Map;
  * instance. The parent workflow may wait for the child to complete or
  * continue executing in parallel.
  */
+@JsonTypeName("workflow.child.spawned")
 @DomainEvent("workflow.child.spawned")
 @SuperBuilder
 @Getter

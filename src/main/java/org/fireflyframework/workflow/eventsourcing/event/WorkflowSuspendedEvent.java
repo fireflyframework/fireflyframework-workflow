@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -29,6 +30,7 @@ import lombok.experimental.SuperBuilder;
  * This event is recorded when a workflow instance is paused, typically
  * while waiting for an external signal, timer, or manual intervention.
  */
+@JsonTypeName("workflow.suspended")
 @DomainEvent("workflow.suspended")
 @SuperBuilder
 @Getter

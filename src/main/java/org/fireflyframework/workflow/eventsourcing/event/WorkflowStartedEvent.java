@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -32,6 +33,7 @@ import java.util.Map;
  * It captures the initial configuration including the workflow definition,
  * input parameters, and execution context.
  */
+@JsonTypeName("workflow.started")
 @DomainEvent("workflow.started")
 @SuperBuilder
 @Getter

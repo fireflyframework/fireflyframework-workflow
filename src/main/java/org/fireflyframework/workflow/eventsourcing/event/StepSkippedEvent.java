@@ -16,6 +16,7 @@
 
 package org.fireflyframework.workflow.eventsourcing.event;
 
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import org.fireflyframework.eventsourcing.annotation.DomainEvent;
 import org.fireflyframework.eventsourcing.domain.AbstractDomainEvent;
 import lombok.AllArgsConstructor;
@@ -30,6 +31,7 @@ import lombok.experimental.SuperBuilder;
  * typically because a conditional guard evaluated to false or the
  * step is not applicable for the current execution path.
  */
+@JsonTypeName("workflow.step.skipped")
 @DomainEvent("workflow.step.skipped")
 @SuperBuilder
 @Getter
