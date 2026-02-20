@@ -221,7 +221,7 @@ firefly:
       snapshot-threshold: 20
 ```
 
-> **Important:** Durable execution is OFF by default (`enabled: false`). Some query methods on `EventSourcedWorkflowStateStore` return empty results (e.g., `findByWorkflowId`, `findByStatus`, `findActiveInstances`) because they require read-side projections that are not yet built. Individual instance lookup via `findById` works by replaying the aggregate's event stream.
+> **Important:** Durable execution is OFF by default (`enabled: false`). When enabled, a read-side projection (`workflow_instances_projection`) is automatically maintained to support query methods like `findByWorkflowId`, `findByStatus`, and `findActiveInstances`. The projection requires a `DatabaseClient` bean (R2DBC) and polls the event store on a configurable interval. If no `DatabaseClient` is available, query and count methods gracefully degrade to empty results.
 
 ## Configuration Summary
 

@@ -484,7 +484,7 @@ firefly:
 
 The recovery service is created by `WorkflowEngineAutoConfiguration` when `recovery.enabled` is `true`. It uses `WorkflowStateStore.findStaleInstances(Duration)` to locate stale instances.
 
-**Limitation with durable execution:** `EventSourcedWorkflowStateStore.findStaleInstances()` returns `Flux.empty()` because it requires read-side projections that are not yet built. In durable execution mode, crash recovery relies on event replay rather than stale instance detection.
+**Durable execution note:** When the read-side projection is available (`DatabaseClient` bean present), `EventSourcedWorkflowStateStore.findStaleInstances()` queries the `workflow_instances_projection` table for RUNNING/WAITING instances older than the specified duration. If no projection is available, it gracefully degrades to `Flux.empty()`.
 
 ---
 
